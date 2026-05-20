@@ -1,0 +1,53 @@
+#!/bin/bash -l
+
+job_ids=($(squeue -u "$USER" -h -o "%i"))
+
+squeue -u "$USER" -h -o "%j: %i status: (%t), run time: %M, node: %R" 
+
+echo
+echo RAM \& CPU usage
+
+comma_separated_job_ids=$(printf ",%s" "${job_ids[@]}")
+sstat -j ${comma_separated_job_ids} --format=JobID,MaxVMSize,MaxRSS,AveCPU,AveRSS,AveVMSize
+
+echo
+echo "GPU usage"
+echo "Job ID: GPU Utilization, Used, Total, Free"
+for job_id in "${job_ids[@]}"; do
+    if [ -f jobs/gpu_usage_${job_id}.log ]; then
+        echo "$job_id" $(tail -n 3 jobs/gpu_usage_${job_id}.log)
+    else
+        echo "No GPU log file found for job ID: $job_id"
+    fi
+done
+
+echo
+echo "Job stdout"
+echo "---------------------------------------------------------------"
+for job_id in "${job_ids[@]}"; do
+    filename=./jobs/*${job_id}.stdout
+    if [ -f $filename ]; then
+        tail -n 10 $filename
+        echo
+        echo "---------------------------------------------------------------"
+        echo
+    else
+        echo No stdout file found for $filename
+    fi
+done
+
+echo
+echo "Job stderr"
+echo "---------------------------------------------------------------"
+for job_id in "${job_ids[@]}"; do
+    filename=./jobs/*${job_id}.err
+    if [ -f $filename ]; then
+        tail -n 10 $filename
+        echo
+        echo "---------------------------------------------------------------"
+        echo
+    else
+        echo No stderr file found for $filename
+    fi
+done
+

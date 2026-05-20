@@ -1,0 +1,121 @@
+#!/bin/bash -l
+# Kilosort 4 with checkpointing + SLURM auto-requeue.
+#
+# Differences vs run_ks4.sh:
+#   --requeue                : SLURM puts the job back in the queue on signal.
+#   --signal=B:USR1@900      : SLURM sends SIGUSR1 to the batch script 900s
+#                              before walltime. ks4_checkpoint.py traps it,
+#                              writes a checkpoint, and exits 0.
+#   --open-mode=append       : log file appended across restarts.
+#
+# On restart, ks4_checkpoint.py reads _checkpoints/progress.json in the output
+# folder and resumes from the last completed stage. The first time you submit
+# this job, the output folder must not contain an outdated _checkpoints/
+# subdirectory from a previous (different) parameter set; the run name encodes
+# the parameters so this normally takes care of itself.
+
+#SBATCH -D ./
+#SBATCH -o ./slurm/%j/logs/ks4.log
+#SBATCH -e ./slurm/%j/logs/ks4.log
+#SBATCH -J kilosort_ckpt
+#SBATCH --constraint=gpu
+#SBATCH --gres=gpu:a100:1
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=18
+#SBATCH --mem=125000
+#SBATCH --mail-user=gong.tingchen@gmail.com
+#SBATCH --mail-type=BEGIN,END,FAIL
+#SBATCH --time=23:59:55
+
+# --- Checkpoint requeue plumbing -------------------------------------------
+#SBATCH --requeue
+#SBATCH --signal=B:USR1@900
+#SBATCH --open-mode=append
+# ---------------------------------------------------------------------------
+
+# Trap USR1 in the batch script as well so the trap is registered before
+# Python starts. Python's own handler (installed by ks4_checkpoint.py) is
+# what actually flushes state; this shell trap just makes sure the signal
+# doesn't terminate the script via the default disposition.
+USR1_RECEIVED=0
+trap 'echo "[sbatch] USR1 received at $(date), forwarding to python (PID $PYPID)"; kill -USR1 $PYPID 2>/dev/null; USR1_RECEIVED=1' SIGUSR1
+trap 'echo "[sbatch] TERM received at $(date), forwarding to python (PID $PYPID)"; kill -TERM $PYPID 2>/dev/null' SIGTERM
+
+echo "[sbatch] job $SLURM_JOB_ID restart $SLURM_RESTART_COUNT starting at $(date)"
+
+conda activate phy2
+
+# Use the patched local Kilosort copy in preference to the pip-installed one.
+# Remove this line to revert to the conda env's kilosort.
+export PYTHONPATH=/u/gongt/scripts/Kilosort-main:$PYTHONPATH
+
+PYTHON=${PYTHON_PATH:-$(which python)}
+
+# Sanity-print which kilosort is being used (one line in the log).
+"$PYTHON" -c "import kilosort, inspect; print('[ks4] using', inspect.getfile(kilosort))"
+
+# Run python in the background so the shell can react to USR1 immediately.
+# Wait on it; if it exits 0 with a partial-progress sentinel file present,
+# SLURM's --requeue will put the job back in the queue when we exit.
+"$PYTHON" /u/gongt/scripts/ks4_checkpoint.py \
+    --root_folder /ptmp/gongt/GLC7248/GLC7248_a_g3 \
+    --data_folder /ptmp/gongt/GLC7248/GLC7248_a_g3/GLC7248_a_g3_imec0 \
+    --nblocks 1 \
+    --Th_universal 9 \
+    --Th_learned 8 \
+    --whitening_range 32 \
+    --nearest_chans 16 \
+    --min_template_size 12 \
+    --template_sizes 8 \
+    --templates_from_data True \
+    --n_templates 6 \
+    --n_pcs 32 \
+    --Th_single_ch 6 \
+    --acg_threshold 0.1 \
+    --ccg_threshold 0.05 \
+    --cluster_downsampling 10 \
+    --cluster_neighbors 10 \
+    --do_CAR True \
+    --n_jobs 36 \
+    --save_preprocessed_copy False \
+    --max_threads_per_worker 8 \
+    --clear_cache True \
+    --time_end 6500 \
+    --skip_kilosort_preprocessing False \
+    --delete_recording_dat False &
+
+PYPID=$!
+# Loop on wait: in bash, wait returns early (with 128+signum) when a signal
+# arrives and a trap fires, even if the child is still alive.  Without the
+# loop the shell would exit immediately on USR1, killing Python before it can
+# checkpoint.  We keep waiting until Python has actually exited.
+RC=0
+while true; do
+    wait $PYPID
+    RC=$?
+    # If Python is still alive the wait was interrupted by a signal; keep waiting.
+    kill -0 $PYPID 2>/dev/null || break
+done
+echo "[sbatch] python exited with code $RC at $(date)"
+
+# --- Requeue logic ---------------------------------------------------------
+# Case 1: Python checkpointed cleanly and exited with REQUEUE_EXIT_CODE (75).
+#         Explicitly requeue so the next allocation resumes from the checkpoint.
+# Case 2: USR1 was received (SLURM time-limit warning) but Python was stuck
+#         inside a non-interruptible stage (e.g. drift) and was killed by
+#         SIGTERM (RC=143) or SIGKILL (RC=137) at walltime.  Requeue anyway
+#         so the next run resumes from the last completed stage checkpoint.
+# Any other non-zero RC is a genuine error; do not requeue.
+if [[ $RC -eq 75 ]]; then
+    echo "[sbatch] checkpoint exit, requeuing job $SLURM_JOB_ID"
+    scontrol requeue "$SLURM_JOB_ID"
+    exit 0
+elif [[ $USR1_RECEIVED -eq 1 ]] && [[ $RC -eq 143 || $RC -eq 137 ]]; then
+    echo "[sbatch] killed at walltime after USR1; requeuing from last stage checkpoint"
+    scontrol requeue "$SLURM_JOB_ID"
+    exit 0
+fi
+# ---------------------------------------------------------------------------
+
+exit $RC

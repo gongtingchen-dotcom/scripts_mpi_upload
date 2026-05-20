@@ -1,0 +1,28 @@
+2025-11-11 17:09:30,815 kilosort.run_kilosort INFO      
+2025-11-11 17:09:30,815 kilosort.run_kilosort INFO     Computing preprocessing variables.
+2025-11-11 17:09:30,815 kilosort.run_kilosort INFO     ----------------------------------------
+2025-11-11 17:09:31,417 kilosort.run_kilosort INFO     N samples: 86545524
+2025-11-11 17:09:31,417 kilosort.run_kilosort INFO     N seconds: 2884.8508
+2025-11-11 17:09:31,417 kilosort.run_kilosort INFO     N batches: 1443
+2025-11-11 17:09:48,149 kilosort.run_kilosort INFO     Preprocessing filters computed in 17.33s; total 17.33s
+2025-11-11 17:09:48,149 kilosort.run_kilosort DEBUG    hp_filter shape: torch.Size([30122])
+2025-11-11 17:09:48,149 kilosort.run_kilosort DEBUG    whiten_mat shape: torch.Size([369, 369])
+2025-11-11 17:09:48,217 kilosort.run_kilosort DEBUG    First batch min, max: (-8.114289, 5.9097543)
+2025-11-11 17:09:48,218 kilosort.run_kilosort INFO      
+2025-11-11 17:09:48,218 kilosort.run_kilosort INFO     Resource usage after preprocessing
+2025-11-11 17:09:48,218 kilosort.run_kilosort INFO     ********************************************************
+2025-11-11 17:09:48,218 kilosort.run_kilosort INFO     CPU usage:    12.80 %
+2025-11-11 17:09:48,218 kilosort.run_kilosort INFO     Mem used:      9.10 %     |      45.65 GB
+2025-11-11 17:09:48,218 kilosort.run_kilosort INFO     Mem avail:    457.28 / 502.93 GB
+2025-11-11 17:09:48,218 kilosort.run_kilosort INFO     ------------------------------------------------------
+2025-11-11 17:09:48,218 kilosort.run_kilosort INFO     GPU usage:    `conda install pynvml` for GPU usage
+2025-11-11 17:09:48,218 kilosort.run_kilosort INFO     GPU memory:    5.31 %     |      2.10   /    39.49 GB
+2025-11-11 17:09:48,218 kilosort.run_kilosort INFO     Allocated:     0.02 %     |      0.01   /    39.49 GB
+2025-11-11 17:09:48,218 kilosort.run_kilosort INFO     Max alloc:     3.18 %     |      1.26   /    39.49 GB
+2025-11-11 17:09:48,218 kilosort.run_kilosort INFO     ********************************************************
+2025-11-11 17:09:48,287 kilosort.run_kilosort INFO      
+2025-11-11 17:09:48,287 kilosort.run_kilosort INFO     Computing drift correction.
+2025-11-11 17:09:48,287 kilosort.run_kilosort INFO     ----------------------------------------
+2025-11-11 17:09:48,288 kilosort.spikedetect INFO     Using built-in universal templates.
+2025-11-11 17:09:48,288 kilosort.utils INFO     Downloading: "https://osf.io/download/6807fb5958b763aae139aa60/" to /u/gongt/.kilosort/wTEMP.npz
+
