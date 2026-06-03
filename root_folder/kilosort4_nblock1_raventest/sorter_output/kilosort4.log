@@ -1,6 +1,0 @@
-2025-11-17 13:34:13,256 kilosort.run_kilosort INFO      
-2025-11-17 13:34:13,259 kilosort.run_kilosort INFO     Computing preprocessing variables.
-2025-11-17 13:34:13,260 kilosort.run_kilosort INFO     ----------------------------------------
-2025-11-17 13:34:14,889 kilosort.run_kilosort INFO     N samples: 1082222502
-2025-11-17 13:34:14,891 kilosort.run_kilosort INFO     N seconds: 36074.0834
-2025-11-17 13:34:14,893 kilosort.run_kilosort INFO     N batches: 18038
