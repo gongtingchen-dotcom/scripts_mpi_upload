@@ -30,7 +30,7 @@ PEAKS_FILENAME  = "peaks_combined2_sorted.npy"
 # LOC_FILENAME    = None
 LOC_FILENAME    = "localized_peaks_mt_raw.npy"  # set to None to derive locations from max channel depth
 
-CHUNK_DURATION_S = 70 * 60   # 70 min per chunk
+CHUNK_DURATION_S = 70 * 60 * 5   # 70 min per chunk
 OVERLAP_S        = 10 * 60   # 10 min overlap (>= time_horizon_s for reliable alignment)
 STEP_S           = CHUNK_DURATION_S - OVERLAP_S   # 60 min advance per chunk
 
@@ -100,6 +100,7 @@ def estimate_chunk(chunk_idx, run_name=None, amp_percentile=None, depth_min=None
     total_duration = rec.get_total_duration()
 
     windows = get_chunk_windows(total_duration)
+    print("windows:", windows)
     if chunk_idx >= len(windows):
         raise ValueError(f"chunk_idx {chunk_idx} out of range (0–{len(windows)-1})")
 

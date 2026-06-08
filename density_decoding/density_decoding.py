@@ -61,7 +61,7 @@ _ap.add_argument('--n_workers',     type=int,   default=16,
 _ap.add_argument('--chunk_size',    type=int,   default=50,          ###CHANGED
                  help='Trials per chunk for interleaved train/test split (default 50); '  ###CHANGED
                       'set to 0 to use the original contiguous 80/20 split')  ###CHANGED
-_ap.add_argument('--early_stopping', action='store_true', default=False,  ###CHANGED
+_ap.add_argument('--early_stopping', action='store_true', default=True,  ###CHANGED
                  help='Enable EMA-patience early stopping in ADVI training')  ###CHANGED
 _ap.add_argument('--es_patience',   type=int,   default=500,          ###CHANGED
                  help='Early stopping patience in iterations (default 500)')  ###CHANGED
@@ -87,7 +87,7 @@ _beh_key_dir = _args.behavior_var.lower().replace(' ', '_')
 RESULTS_DIR  = os.path.join(
     BASE_DIR,
     "density_decoding",
-    f"{_beh_key_dir}_{_args.n_t_bins}bins_{_args.t_trial:.3g}s"
+    f"{_beh_key_dir}_{_args.n_t_bins}bins_{_args.t_trial:.3g}s_2"
 )
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
