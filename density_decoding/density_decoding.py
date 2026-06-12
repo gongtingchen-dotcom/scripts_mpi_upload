@@ -87,7 +87,7 @@ _beh_key_dir = _args.behavior_var.lower().replace(' ', '_')
 RESULTS_DIR  = os.path.join(
     BASE_DIR,
     "density_decoding",
-    f"{_beh_key_dir}_{_args.n_t_bins}bins_{_args.t_trial:.3g}s_2"
+    f"{_beh_key_dir}_{_args.n_t_bins}bins_{_args.t_trial:.3g}s"
 )
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
@@ -861,8 +861,7 @@ _params = {
         "n_windows_total":   int(n_trials_beh),
     },
     "gmm_init": {
-        "method":               "isosplit",
-        "MAX_ISOSPLIT_SPIKES":  100_000,
+        "method":               "isosplit",   # all spikes used; no subsampling cap
         "K_init":               20,
         "min_cluster_size":     10,
         "whiten_cluster_pairs": 1,
@@ -1337,6 +1336,99 @@ if os.path.exists(_elbos_npz):
     plt.close()
 else:
     print("[INFO] No ADVI elbo file found — skipping loss plot (run decode_pipeline first).")
+
+# %%
+
+# ── PUTATIVE NEURON VISUALISATION ─────────────────────────────────────────────
+# Loads post_params (ADVI checkpoint) and visualises each GMM component (putative
+# neuron) as a point on the probe geometry.
+#   Left   : (x, z) coloured by mean β (behavioural tuning); size ∝ activity
+#   Middle : (x, z) coloured by mean PTP amplitude (µV);     size ∝ activity
+#   Right  : β(t) tuning curves for the top-20 most active components
+
+_post_params_path = os.path.join(RESULTS_DIR, f'ckpt_{_VAR_KEY}_{SESSION}_post_params.npz')
+if os.path.exists(_post_params_path):
+    print("\n[PUTATIVE NEURONS] Loading post_params ...")
+    _pp          = np.load(_post_params_path)
+    _pn_means    = _pp['means']                  # (n_c, 3): [x µm, z µm, ptp µV]
+    _pn_beta     = _pp['U'] @ _pp['V']           # (n_c, n_t): behavioural tuning
+    _pn_activity = weight_matrix.sum(axis=(0, 2))  # (n_c,): total posterior weight
+    n_pn = len(_pn_means)
+
+    print(f"  {n_pn} GMM components (putative neurons)")
+    print(f"  x range    : {_pn_means[:,0].min():.1f} – {_pn_means[:,0].max():.1f} µm")
+    print(f"  z range    : {_pn_means[:,1].min():.1f} – {_pn_means[:,1].max():.1f} µm")
+    print(f"  PTP range  : {_pn_means[:,2].min():.1f} – {_pn_means[:,2].max():.1f} µV")
+    print(f"  β range    : {_pn_beta.min():.4f} – {_pn_beta.max():.4f}")
+    print(f"  activity   : {_pn_activity.min():.1f} – {_pn_activity.max():.1f}  (sum of posterior weights)")
+
+    # Marker size: normalise activity to [10, 200] pt²
+    _act_99   = np.percentile(_pn_activity, 99)
+    _act_norm = np.clip(_pn_activity / max(_act_99, 1e-9), 0, 1)
+    _pn_sizes = 10 + 190 * _act_norm           # (n_c,)
+
+    _beta_mean = _pn_beta.mean(axis=1)         # (n_c,): mean tuning
+    _t_bins_ms = np.arange(N_T_BINS) * (T_TRIAL / N_T_BINS) * 1000   # ms axis
+
+    fig_pn, axes_pn = plt.subplots(1, 3, figsize=(18, 12),
+                                    gridspec_kw={'width_ratios': [1, 1, 2]})
+    fig_pn.suptitle(
+        f"Putative neurons (GMM components) — {SESSION} — {BEHAVIOR_VAR}\n"
+        f"{n_pn} components  |  marker size ∝ total posterior weight",
+        fontsize=10,
+    )
+
+    # ── Panel 0: behavioural tuning (mean β) ─────────────────────────────────
+    ax_pn0 = axes_pn[0]
+    _bm_abs = max(np.abs(_beta_mean).max(), 1e-9)
+    sc_pn0 = ax_pn0.scatter(
+        _pn_means[:, 0], _pn_means[:, 1],
+        s=_pn_sizes, c=_beta_mean,
+        cmap='RdBu_r', vmin=-_bm_abs, vmax=_bm_abs,
+        edgecolors='k', linewidths=0.3, alpha=0.85,
+    )
+    plt.colorbar(sc_pn0, ax=ax_pn0, label=f'Mean β ({BEHAVIOR_VAR})', shrink=0.6)
+    ax_pn0.set_xlabel('x (µm)'); ax_pn0.set_ylabel('Depth z (µm)')
+    ax_pn0.set_title('Behavioural tuning (mean β)', fontsize=9)
+    ax_pn0.grid(True, alpha=0.2)
+
+    # ── Panel 1: mean PTP amplitude ───────────────────────────────────────────
+    ax_pn1 = axes_pn[1]
+    _ptp99 = np.percentile(_pn_means[:, 2], 99)
+    sc_pn1 = ax_pn1.scatter(
+        _pn_means[:, 0], _pn_means[:, 1],
+        s=_pn_sizes, c=np.clip(_pn_means[:, 2], 0, _ptp99),
+        cmap='hot_r', vmin=0, vmax=_ptp99,
+        edgecolors='k', linewidths=0.3, alpha=0.85,
+    )
+    plt.colorbar(sc_pn1, ax=ax_pn1, label='Mean PTP amplitude (µV)', shrink=0.6)
+    ax_pn1.set_xlabel('x (µm)'); ax_pn1.set_ylabel('Depth z (µm)')
+    ax_pn1.set_title('Amplitude (mean PTP µV)', fontsize=9)
+    ax_pn1.grid(True, alpha=0.2)
+
+    # ── Panel 2: β(t) tuning curves, top-20 by total activity ────────────────
+    ax_pn2 = axes_pn[2]
+    _top20  = np.argsort(_pn_activity)[-20:][::-1]
+    _cmap20 = plt.cm.tab20(np.linspace(0, 1, len(_top20)))
+    for _ci, _idx in enumerate(_top20):
+        ax_pn2.plot(_t_bins_ms, _pn_beta[_idx],
+                    color=_cmap20[_ci], lw=1.2, alpha=0.85,
+                    label=f'#{_idx}  act={_pn_activity[_idx]:.0f}')
+    ax_pn2.axhline(0, color='k', lw=0.6, ls='--', alpha=0.4)
+    ax_pn2.set_xlabel(f'Time within trial (ms, bin={T_TRIAL/N_T_BINS*1000:.0f} ms)')
+    ax_pn2.set_ylabel(f'β ({BEHAVIOR_VAR} tuning)')
+    ax_pn2.set_title('β(t) tuning curves — top-20 most active components', fontsize=9)
+    ax_pn2.legend(fontsize=5, loc='upper right', ncol=2, framealpha=0.7)
+    ax_pn2.grid(True, alpha=0.2)
+
+    plt.tight_layout()
+    _pn_save = os.path.join(RESULTS_DIR, f'putative_neurons_{_VAR_KEY}_{SESSION}.png')
+    plt.savefig(_pn_save, dpi=130, bbox_inches='tight')
+    print(f"Saved → {_pn_save}")
+    plt.close(fig_pn)
+else:
+    print(f"[INFO] post_params checkpoint not found — skipping putative neuron plot.\n"
+          f"       (expected: {_post_params_path})")
 
 _, obs_beh, pred_beh, metrics_beh = sliding_window_decoder(  ###CHANGED  # capture obs_beh (windowed y_test) to match pred_beh shape
     weight_matrix, bin_beh_v, train_idx, test_idx, behavior_type="continuous"
