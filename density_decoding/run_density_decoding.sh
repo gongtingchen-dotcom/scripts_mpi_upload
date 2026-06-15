@@ -37,4 +37,4 @@ conda activate density_decoding
 # Python path should be passed as environment variable when submitting job
 PYTHON=${PYTHON_PATH:-$(which python)}
 
-python /u/gongt/scripts/density_decoding/density_decoding.py  --animal GLC6962 --exp _g_g0 --behavior_var texture_speed --t_trial 3 --n_t_bins 30
+python /u/gongt/scripts/density_decoding/density_decoding.py  --animal GLC6962 --exp _g_g0 --behavior_var PC1 --t_trial 3 --n_t_bins 30

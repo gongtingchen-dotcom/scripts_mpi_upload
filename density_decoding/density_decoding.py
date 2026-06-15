@@ -58,17 +58,22 @@ _ap.add_argument('--learning_rate', type=float, default=1e-3,
                  help='ADVI learning rate (default 1e-3)') 
 _ap.add_argument('--n_workers',     type=int,   default=16,
                  help='Number of parallel workers (default 16)')
-_ap.add_argument('--chunk_style',   choices=['contiguous', 'interleaved'], default='interleaved',  ###CHANGED_NEW
+_ap.add_argument('--chunk_style',   choices=['contiguous', 'interleaved'], default='contiguous',  ###CHANGED_NEW
                  help='Train/test split style: contiguous (80-20 at end) or interleaved (distributed, default)')
 _ap.add_argument('--test_percentage', type=float, default=20,  ###CHANGED_NEW
                  help='Percentage of data to use for testing (default 20, range 1-99)')
 _ap.add_argument('--chunk_size',    type=int,   default=50,         
                  help='Trials per chunk for interleaved train/test split (default 50); '  ###CHANGED
                       'only used when chunk_style=interleaved')  ###CHANGED
-_ap.add_argument('--early_stopping', action='store_true', default=True,  ###CHANGED
-                 help='Enable EMA-patience early stopping in ADVI training')  ###CHANGED
+_ap.add_argument('--early_stopping', action=_argparse.BooleanOptionalAction, default=True,  ###CHANGED
+                 help='Enable EMA-patience early stopping in ADVI training (--no-early-stopping to disable)')  ###CHANGED
 _ap.add_argument('--es_patience',   type=int,   default=2000,         ###CHANGED  raised from 200
                  help='Early stopping patience in iterations (default 2000)')  ###CHANGED
+_ap.add_argument('--zscore_spike_features', action=_argparse.BooleanOptionalAction, default=False,
+                 help='Z-score x, z, and ptp independently before GMM/ADVI fitting. '
+                      'Recommended when features have very different scales (e.g. z in µm vs ptp in µV). '
+                      'Use --no-zscore-spike-features to disable. '
+                      'If a spike-bins checkpoint already exists, delete it before toggling this flag.')
 _args = _ap.parse_args()
 
 DF_DIR = r"/ptmp/gongt/behaviour"
@@ -91,7 +96,7 @@ _beh_key_dir = _args.behavior_var.lower().replace(' ', '_')
 RESULTS_DIR  = os.path.join(
     BASE_DIR,
     "density_decoding",
-    f"{_beh_key_dir}_{_args.n_t_bins}bins_{_args.t_trial:.3g}s_orig"
+    f"{_beh_key_dir}_{_args.n_t_bins}bins_{_args.t_trial:.3g}s_{_args.chunk_style}_nozscore"
 )
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
@@ -179,7 +184,6 @@ print(f"z range (depth)     : {spike_z.min():.1f} – {spike_z.max():.1f} µm")
 print(f"amplitude range     : {spike_amp.min():.2f} – {spike_amp.max():.2f} µV")
 print(f"\nBehavioral rows     : {len(beh_t):,}")
 print(f"beh_t range         : {beh_t.min():.3f} – {beh_t.max():.3f} s")
-print(f"Neural–video offset : neural starts {ap_t_offset - beh_t.min():.3f} s AFTER video")
 
 
 # %% [markdown]
@@ -646,11 +650,11 @@ t_um       = np.linspace(-col_gap * 0.45, col_gap * 0.45, wf_len)
 # ── Read all waveforms first to compute amplitude scale ───────────────────────
 all_wfs = []
 all_nbr = []
-for si in sel:
-    pk_ch = int(peaks['channel_index'][si])
+for _spi in sel:
+    pk_ch = int(peaks['channel_index'][_spi])
     dists = np.linalg.norm(ch_locs - ch_locs[pk_ch], axis=1)
     nbr   = np.argsort(dists)[:N_NBR]
-    samp  = int(spike_times_samp[si])
+    samp  = int(spike_times_samp[_spi])
     t0    = max(0, samp - N_BEFORE)
     t1    = min(n_total_samp, samp + N_AFTER)
     tr    = rec_si.get_traces(start_frame=t0, end_frame=t1)[:, nbr].astype(np.float32)
@@ -685,11 +689,11 @@ fig.suptitle(
     fontsize=10,
 )
 
-for pi, (si, wf, nbr) in enumerate(zip(sel, all_wfs, all_nbr)):
+for pi, (_spi, wf, nbr) in enumerate(zip(sel, all_wfs, all_nbr)):
     ax     = axes[pi]
-    pk_ch  = int(peaks['channel_index'][si])
-    px     = float(spike_x[si])
-    pz     = float(z_corr[si])    # DREDge-corrected depth
+    pk_ch  = int(peaks['channel_index'][_spi])
+    px     = float(spike_x[_spi])
+    pz     = float(z_corr[_spi])    # DREDge-corrected depth
 
     # All probe electrodes — background context
     ax.scatter(ch_locs[:, 0], ch_locs[:, 1],
@@ -714,7 +718,7 @@ for pi, (si, wf, nbr) in enumerate(zip(sel, all_wfs, all_nbr)):
 
     ax.set_title(
         f"spike {pi+1}  det_ch={pk_ch}\n"
-        f"{spike_amp[si]:.0f} µV  x={px:.0f}  z={pz:.0f} µm (corr)",
+        f"{spike_amp[_spi]:.0f} µV  x={px:.0f}  z={pz:.0f} µm (corr)",
         fontsize=8)
     ax.tick_params(labelsize=7)
     ax.grid(True, alpha=0.18)
@@ -773,9 +777,31 @@ print(f"  spike_times    shape {spike_times.shape},    dtype {spike_times.dtype}
 print(f"  spike_channels shape {spike_channels.shape}, dtype {spike_channels.dtype}")
 print(f"  spike_features shape {spike_features.shape}, dtype {spike_features.dtype}")
 print(f"  columns: x (µm, triangulated) | z (µm, triangulated + DREDge-corrected) | PTP amplitude (µV)")
+print(f"  raw ranges: x=[{spike_features[:,0].min():.1f}, {spike_features[:,0].max():.1f}]  "
+      f"z=[{spike_features[:,1].min():.1f}, {spike_features[:,1].max():.1f}]  "
+      f"ptp=[{spike_features[:,2].min():.2f}, {spike_features[:,2].max():.2f}]")
 print()
-print("Ready for density decoding pipeline:")
-print("  ibl_data_loader.load_spike_features(spike_times, spike_channels, spike_features, brain_region='all')")
+
+ZSCORE_SPIKE_FEATURES = _args.zscore_spike_features
+if ZSCORE_SPIKE_FEATURES:
+    _sf_mean = spike_features.mean(axis=0)
+    _sf_std  = spike_features.std(axis=0)
+    _sf_std[_sf_std < 1e-9] = 1.0   # guard against constant features
+    spike_features = ((spike_features - _sf_mean) / _sf_std).astype(np.float32)
+    print(f"[ZSCORE] Spike features z-scored (per column):")
+    print(f"  means : x={_sf_mean[0]:.3f}  z={_sf_mean[1]:.3f}  ptp={_sf_mean[2]:.3f}")
+    print(f"  stds  : x={_sf_std[0]:.3f}  z={_sf_std[1]:.3f}  ptp={_sf_std[2]:.3f}")
+    print(f"  after : x=[{spike_features[:,0].min():.2f}, {spike_features[:,0].max():.2f}]  "
+          f"z=[{spike_features[:,1].min():.2f}, {spike_features[:,1].max():.2f}]  "
+          f"ptp=[{spike_features[:,2].min():.2f}, {spike_features[:,2].max():.2f}]")
+    _zscore_params_sf = {
+        'x_mean': float(_sf_mean[0]),  'x_std': float(_sf_std[0]),
+        'z_mean': float(_sf_mean[1]),  'z_std': float(_sf_std[1]),
+        'ptp_mean': float(_sf_mean[2]),'ptp_std': float(_sf_std[2]),
+    }
+else:
+    print("[ZSCORE] Spike features NOT z-scored (pass --zscore_spike_features to enable).")
+    _zscore_params_sf = None
 
 
 # %% [markdown]
@@ -815,7 +841,13 @@ else:
     beh_z = beh_raw.copy()
 
 print(f"{BEHAVIOR_VAR} raw : min={np.nanmin(beh_raw):.3f}  max={np.nanmax(beh_raw):.3f}  "
-      f"nan={np.isnan(beh_raw).sum()}  z_scored={Z_SCORE_BEH}")
+      f"mean={np.nanmean(beh_raw):.3f}  std={np.nanstd(beh_raw):.3f}  "
+      f"nan={np.isnan(beh_raw).sum()}")
+if Z_SCORE_BEH:
+    print(f"{BEHAVIOR_VAR} zscored : min={np.nanmin(beh_z):.3f}  max={np.nanmax(beh_z):.3f}  "
+          f"mean={np.nanmean(beh_z):.6f}  std={np.nanstd(beh_z):.6f}")
+else:
+    print(f"  (z-scoring DISABLED — using raw behavioral values)")
 
 # ── 2. Overlapping neural–behavioral window ───────────────────────────────────
 T_OV_START = max(beh_t.min(), ap_t_offset)
@@ -827,6 +859,12 @@ print(f"\nOverlap window: {T_OV_START:.2f} – {T_OV_END:.2f} s "
 trial_starts = np.arange(T_OV_START, T_OV_END - T_TRIAL, T_TRIAL)
 trial_ends   = trial_starts + T_TRIAL
 n_trials_beh = len(trial_starts)
+
+CHUNK_STYLE     = _args.chunk_style      ###CHANGED_NEW
+CHUNK_SIZE      = _args.chunk_size
+TEST_PERCENTAGE = _args.test_percentage  ###CHANGED_NEW
+TEST_FRAC       = TEST_PERCENTAGE / 100.0  ###CHANGED_NEW
+TRAIN_FRAC      = 1.0 - TEST_FRAC  ###CHANGED_NEW
 print(f"\nWindow length : {T_TRIAL} s  x  {N_T_BINS} bins = {T_TRIAL/N_T_BINS*1000:.0f} ms/bin")
 print(f"Number of windows : {n_trials_beh}  (~{n_trials_beh*TRAIN_FRAC:.0f} train, ~{n_trials_beh*TEST_FRAC:.0f} test)")
 
@@ -849,6 +887,8 @@ _params = {
         "test_percentage": float(TEST_PERCENTAGE),  ###CHANGED_NEW
         "train_frac":    float(TRAIN_FRAC),  ###CHANGED_NEW
         "test_frac":     float(TEST_FRAC),  ###CHANGED_NEW
+        "zscore_spike_features": ZSCORE_SPIKE_FEATURES,
+        "spike_feature_zscore_params": _zscore_params_sf,
     },
     "data": {
         "PREPROC_DIR":      PREPROC_DIR,
@@ -979,13 +1019,8 @@ n_valid  = len(valid_trials_beh)
 # train_idx = np.arange(n_train)                               ###CHANGED
 # test_idx  = np.arange(n_train, n_valid)                      ###CHANGED
 
-CHUNK_STYLE = _args.chunk_style  ###CHANGED_NEW
-TEST_PERCENTAGE = _args.test_percentage  ###CHANGED_NEW
 if TEST_PERCENTAGE <= 0 or TEST_PERCENTAGE >= 100:  ###CHANGED_NEW
     raise ValueError(f"test_percentage must be in range (0, 100), got {TEST_PERCENTAGE}")
-TEST_FRAC = TEST_PERCENTAGE / 100.0  ###CHANGED_NEW
-TRAIN_FRAC = 1.0 - TEST_FRAC  ###CHANGED_NEW
-CHUNK_SIZE = _args.chunk_size  ###CHANGED
 if CHUNK_STYLE == 'interleaved' and n_valid >= CHUNK_SIZE:  ###CHANGED_NEW  # interleaved chunked split
     # Divide valid trials into blocks of CHUNK_SIZE.
     # Within each block: first (100-test_percentage)% → train, last test_percentage% → test.
@@ -1248,12 +1283,14 @@ else:
     print()
     # ─────────────────────────────────────────────────────────────────────────
 
-    # ── live loss-curve monitor (background thread, saves PNG every 60 s) ───
+    # ── live loss-curve monitors (background threads) ────────────────────────
     import threading as _threading
     _advi_epoch_ckpt = os.path.join(RESULTS_DIR, f'ckpt_{_VAR_KEY}_{SESSION}_advi_epoch.pt')
     _advi_live_plot  = os.path.join(RESULTS_DIR, f'advi_loss_live_{_VAR_KEY}_{SESSION}.png')
+    _glm_losses_ckpt = os.path.join(RESULTS_DIR, f'ckpt_{_VAR_KEY}_{SESSION}_glm_losses.npz')
+    _glm_live_plot   = os.path.join(RESULTS_DIR, f'glm_loss_live_{_VAR_KEY}_{SESSION}.png')
 
-    def _loss_monitor(ckpt_path, plot_path, stop_evt, interval=60):
+    def _advi_loss_monitor(ckpt_path, plot_path, stop_evt, interval=60):
         import matplotlib
         matplotlib.use('Agg')
         import matplotlib.pyplot as _plt
@@ -1281,7 +1318,7 @@ else:
                              label='Val ELBO')
                 _ax.set_xlabel('Iteration')
                 _ax.set_ylabel('ELBO')
-                _ax.set_title(f'ADVI training (live) — iter {_it} / {_ec.get("max_iter","?")}  '
+                _ax.set_title(f'ADVI training (live) — iter {_it}  '
                               f'{BEHAVIOR_VAR}  {SESSION}', fontsize=9)
                 _ax.legend(fontsize=8)
                 _ax.grid(True, alpha=0.25)
@@ -1291,14 +1328,72 @@ else:
             except Exception:
                 pass
 
+    def _glm_loss_monitor(ckpt_path, plot_path, stop_evt, interval=30):
+        import matplotlib
+        matplotlib.use('Agg')
+        import matplotlib.pyplot as _plt
+        _last_mtime = 0
+        while not stop_evt.wait(interval):
+            if not os.path.exists(ckpt_path):
+                continue
+            try:
+                _mtime = os.path.getmtime(ckpt_path)
+                if _mtime <= _last_mtime:
+                    continue
+                _last_mtime = _mtime
+                _gl = np.load(ckpt_path)
+                _tr  = _gl['train_losses']
+                _te_ep  = _gl.get('test_epochs',  np.array([]))
+                _te_val = _gl.get('test_losses', np.array([]))
+                if len(_tr) == 0:
+                    continue
+                _fig, axes_glm = _plt.subplots(1, 2, figsize=(14, 4))
+                # left: full loss curves
+                ax_glm0 = axes_glm[0]
+                ax_glm0.plot(np.arange(len(_tr)), _tr,
+                             lw=0.8, color='steelblue', alpha=0.85, label='Train (Poisson NLL)')
+                if len(_te_ep):
+                    ax_glm0.plot(_te_ep, _te_val,
+                                 lw=1.4, color='darkorange', marker='o', markersize=3,
+                                 label='Test (Poisson NLL)')
+                ax_glm0.set_xlabel('Epoch'); ax_glm0.set_ylabel('Poisson NLL')
+                ax_glm0.set_title(f'GLM loss (live) — epoch {len(_tr)}/5000  {BEHAVIOR_VAR}  {SESSION}', fontsize=9)
+                ax_glm0.legend(fontsize=8); ax_glm0.grid(True, alpha=0.25)
+                # right: last 20% of training (zoom on convergence tail)
+                ax_glm1 = axes_glm[1]
+                _tail = max(1, len(_tr) * 4 // 5)
+                ax_glm1.plot(np.arange(_tail, len(_tr)), _tr[_tail:],
+                             lw=0.8, color='steelblue', alpha=0.85, label='Train (tail)')
+                if len(_te_ep):
+                    _te_tail_mask = _te_ep >= _tail
+                    if _te_tail_mask.any():
+                        ax_glm1.plot(_te_ep[_te_tail_mask], _te_val[_te_tail_mask],
+                                     lw=1.4, color='darkorange', marker='o', markersize=3,
+                                     label='Test (tail)')
+                ax_glm1.set_xlabel('Epoch'); ax_glm1.set_ylabel('Poisson NLL')
+                ax_glm1.set_title('Last 20% of epochs (convergence zoom)', fontsize=9)
+                ax_glm1.legend(fontsize=8); ax_glm1.grid(True, alpha=0.25)
+                _plt.tight_layout()
+                _plt.savefig(plot_path, dpi=130, bbox_inches='tight')
+                _plt.close(_fig)
+            except Exception:
+                pass
+
     _stop_monitor = _threading.Event()
-    _monitor_thread = _threading.Thread(
-        target=_loss_monitor,
+    _advi_monitor_thread = _threading.Thread(
+        target=_advi_loss_monitor,
         args=(_advi_epoch_ckpt, _advi_live_plot, _stop_monitor),
         daemon=True,
     )
-    _monitor_thread.start()
-    print(f"  Live loss plot → {_advi_live_plot}  (updated every 60 s)")
+    _glm_monitor_thread = _threading.Thread(
+        target=_glm_loss_monitor,
+        args=(_glm_losses_ckpt, _glm_live_plot, _stop_monitor),
+        daemon=True,
+    )
+    _advi_monitor_thread.start()
+    _glm_monitor_thread.start()
+    print(f"  Live ADVI loss plot → {_advi_live_plot}  (updated every 60 s)")
+    print(f"  Live GLM  loss plot → {_glm_live_plot}  (updated every 30 s)")
     # ─────────────────────────────────────────────────────────────────────────
 
     weight_matrix = decode_pipeline(
@@ -1320,7 +1415,8 @@ else:
         es_patience      = _args.es_patience,      ###CHANGED
     )
     _stop_monitor.set()
-    _monitor_thread.join(timeout=5)
+    _advi_monitor_thread.join(timeout=5)
+    _glm_monitor_thread.join(timeout=5)
     np.save(WEIGHT_CKPT, weight_matrix)
     print(f"\n[CHECKPOINT] Saved weight matrix -> {WEIGHT_CKPT}")
 
@@ -1467,13 +1563,13 @@ _n_pred_bins = _n_win - _half_win           # predicted bins per trial (= 25)
 _bin_dur     = T_TRIAL / N_T_BINS           # seconds per bin
 _bin_offsets = np.arange(_half_win, _n_win) * _bin_dur  # (n_pred_bins,) time offsets within trial
 
-_split_label = (f"chunked {CHUNK_SIZE}-trial blocks"
-                if CHUNK_SIZE > 0 and n_valid >= CHUNK_SIZE
-                else "contiguous last 20%")
+_split_label = (f"interleaved {CHUNK_SIZE}-trial chunks"
+                if CHUNK_STYLE == 'interleaved' and n_valid >= CHUNK_SIZE
+                else f"contiguous last {TEST_PERCENTAGE:.0f}%")
 
 # Re-identify which test windows belong to which chunk (group by chunk index).
 # test_idx values are row indices into valid_trials_beh; chunk index = test_idx // CHUNK_SIZE.
-if CHUNK_SIZE > 0 and n_valid >= CHUNK_SIZE:
+if CHUNK_STYLE == 'interleaved' and n_valid >= CHUNK_SIZE:
     _chunk_of_test = test_idx // CHUNK_SIZE
     _unique_chunks = np.unique(_chunk_of_test)
 else:
