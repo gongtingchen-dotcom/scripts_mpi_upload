@@ -67,8 +67,8 @@ _ap.add_argument('--chunk_size',    type=int,   default=50,
                       'only used when chunk_style=interleaved')
 _ap.add_argument('--early_stopping', action=_argparse.BooleanOptionalAction, default=True,
                  help='Enable EMA-patience early stopping in ADVI training (--no-early-stopping to disable)')
-_ap.add_argument('--es_patience',   type=int,   default=1000,
-                 help='Early stopping patience in iterations (default 1000)')
+_ap.add_argument('--es_patience',   type=int,   default=800,
+                 help='Early stopping patience in iterations (default 800)')
 _ap.add_argument('--zscore_spike_features', action=_argparse.BooleanOptionalAction, default=True,
                  help='Z-score x, z, and ptp independently before GMM/ADVI fitting.')
 _args = _ap.parse_args()
@@ -94,7 +94,7 @@ _beh_key_dir = _args.behavior_var.lower().replace(' ', '_')
 RESULTS_DIR  = os.path.join(
     BASE_DIR,
     "density_decoding",
-    f"{_beh_key_dir}_{_args.n_t_bins}bins_{_args.t_trial:.3g}s_{_args.chunk_style}_zscoreboth"
+    f"{_beh_key_dir}_{_args.n_t_bins}bins_{_args.t_trial:.3g}s_{_args.chunk_style}_{'zscoreboth' if _args.zscore_spike_features else 'nozscore'}"
 )
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
@@ -122,7 +122,7 @@ print(beh[disp_cols].head(10).to_string())
 
 # %%
 BEHAVIOR_VAR  = _args.behavior_var
-Z_SCORE_BEH   = True
+Z_SCORE_BEH   = _args.zscore_spike_features
 T_TRIAL       = _args.t_trial
 N_T_BINS      = _args.n_t_bins
 LEARNING_RATE = _args.learning_rate
@@ -543,12 +543,25 @@ else:
         _obs_by_trial  = obs_beh.reshape(len(test_idx), _n_pred_bins)
 
         fig, axes = plt.subplots(len(_unique_chunks), 1, figsize=(18, max(2.2, 2.2 * len(_unique_chunks))), squeeze=False)
+        
+        _fold_r2_str = ", ".join([f"{x:+.3f}" for x in cv_results['fold_r2']])
+        _dec_title = (
+            f"Decoding Results — {BEHAVIOR_VAR}\n"
+            f"Single Split  |  R²: {metrics_beh['r2']:+.4f}   Corr: {metrics_beh['corr']:.4f}   MSE: {metrics_beh['mse']:.4f}\n"
+            f"5-Fold CV     |  mean R²: {cv_results['mean_r2']:+.4f} ± {cv_results['std_r2']:.4f}   "
+            f"mean Corr: {cv_results['mean_corr']:.4f}   mean MSE: {cv_results['mean_mse']:.4f}\n"
+            f"CV Folds R²   |  [{_fold_r2_str}]"
+        )
+        fig.suptitle(_dec_title, fontsize=11, fontweight='bold')
+        
         for _pi, _ci in enumerate(_unique_chunks):
             _tidxs = np.where(_chunk_of_test == _ci)[0]
             _t_ax_chunk = np.concatenate([trial_starts[valid_trials_beh[test_idx[_j]]] + _bin_offsets for _j in _tidxs])
             axes[_pi, 0].plot(_t_ax_chunk, _obs_by_trial[_tidxs].ravel(), color='darkgray', lw=0.8)
             axes[_pi, 0].plot(_t_ax_chunk, _pred_by_trial[_tidxs].ravel(), color='tab:blue', lw=0.8, alpha=0.85)
+            
         plt.tight_layout()
+        fig.subplots_adjust(top=0.9)  # Make room for the suptitle
         fig.savefig(_fig_path, dpi=130, bbox_inches='tight')
         plt.close()
 
