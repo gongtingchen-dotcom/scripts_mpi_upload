@@ -71,6 +71,9 @@ _ap.add_argument('--es_patience',   type=int,   default=800,
                  help='Early stopping patience in iterations (default 800)')
 _ap.add_argument('--zscore_spike_features', action=_argparse.BooleanOptionalAction, default=True,
                  help='Z-score x, z, and ptp independently before GMM/ADVI fitting.')
+_ap.add_argument('--embargo_trials',  type=int,   default=1,
+                 help='Number of trials to drop from training on each side of every CV test '
+                      'block boundary (default 1; set 0 to disable).')
 _args = _ap.parse_args()
 
 DF_DIR = r"/ptmp/gongt/behaviour"
@@ -530,7 +533,8 @@ else:
     _bin_beh_for_decode = bin_beh_v[:_n_wm]
 
     _, obs_beh, pred_beh, metrics_beh = sliding_window_decoder(weight_matrix, _bin_beh_for_decode, train_idx, test_idx, behavior_type="continuous")
-    cv_results = kfold_sliding_window_decoder(weight_matrix, _bin_beh_for_decode, n_folds=5)
+    cv_results = kfold_sliding_window_decoder(weight_matrix, _bin_beh_for_decode, n_folds=5,
+                                              embargo_trials=_args.embargo_trials)
 
     if not os.path.exists(_fig_path):
         _half_win = 7 // 2
