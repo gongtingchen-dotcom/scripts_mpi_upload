@@ -58,7 +58,7 @@ _ap.add_argument('--learning_rate', type=float, default=1e-3,
                  help='ADVI learning rate (default 1e-3)') 
 _ap.add_argument('--n_workers',     type=int,   default=16,
                  help='Number of parallel workers (default 16)')
-_ap.add_argument('--chunk_style',   choices=['contiguous', 'interleaved'], default='contiguous',  ###CHANGED_NEW
+_ap.add_argument('--chunk_style',   choices=['contiguous', 'interleaved'], default='interleaved',  ###CHANGED_NEW
                  help='Train/test split style: contiguous (80-20 at end) or interleaved (distributed, default)')
 _ap.add_argument('--test_percentage', type=float, default=20,  ###CHANGED_NEW
                  help='Percentage of data to use for testing (default 20, range 1-99)')
@@ -67,9 +67,9 @@ _ap.add_argument('--chunk_size',    type=int,   default=50,
                       'only used when chunk_style=interleaved')  ###CHANGED
 _ap.add_argument('--early_stopping', action=_argparse.BooleanOptionalAction, default=True,  ###CHANGED
                  help='Enable EMA-patience early stopping in ADVI training (--no-early-stopping to disable)')  ###CHANGED
-_ap.add_argument('--es_patience',   type=int,   default=2000,         ###CHANGED  raised from 200
-                 help='Early stopping patience in iterations (default 2000)')  ###CHANGED
-_ap.add_argument('--zscore_spike_features', action=_argparse.BooleanOptionalAction, default=False,
+_ap.add_argument('--es_patience',   type=int,   default=1000,         ###CHANGED  raised from 200
+                 help='Early stopping patience in iterations (default 1000)')  ###CHANGED
+_ap.add_argument('--zscore_spike_features', action=_argparse.BooleanOptionalAction, default=True,
                  help='Z-score x, z, and ptp independently before GMM/ADVI fitting. '
                       'Recommended when features have very different scales (e.g. z in µm vs ptp in µV). '
                       'Use --no-zscore-spike-features to disable. '
@@ -96,7 +96,7 @@ _beh_key_dir = _args.behavior_var.lower().replace(' ', '_')
 RESULTS_DIR  = os.path.join(
     BASE_DIR,
     "density_decoding",
-    f"{_beh_key_dir}_{_args.n_t_bins}bins_{_args.t_trial:.3g}s_{_args.chunk_style}_nozscore"
+    f"{_beh_key_dir}_{_args.n_t_bins}bins_{_args.t_trial:.3g}s_{_args.chunk_style}_zscoreboth"
 )
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
@@ -135,7 +135,7 @@ print(sub[disp_cols].head(10).to_string())
 #   gaze           : 'x_coord', 'y_coord'
 #   speed          : 'speed'
 BEHAVIOR_VAR  = _args.behavior_var
-Z_SCORE_BEH   = False    # demo notebook does not z-score; scale doesn't affect R²/corr
+Z_SCORE_BEH   = True    # demo notebook does not z-score; scale doesn't affect R²/corr
                          # set True only if ADVI optimizer shows instability
 T_TRIAL       = _args.t_trial
 N_T_BINS      = _args.n_t_bins
@@ -1225,7 +1225,7 @@ plt.close(fig_insp)
 # ── DENSITY DECODING ──────────────────────────────────────────────────────────
 import torch
 from density_decoding.decode_pipeline import decode_pipeline
-from density_decoding.decoders.behavior_decoder import sliding_window_decoder
+from density_decoding.decoders.behavior_decoder import sliding_window_decoder, kfold_sliding_window_decoder
 
 print("=" * 60)
 print("GPU / DEVICE CHECK")
@@ -1409,7 +1409,7 @@ else:
         device           = device,
         n_workers        = N_WORKERS,
         checkpoint_dir   = RESULTS_DIR,
-        max_iter         = 15000,
+        max_iter         = 8000,
         checkpoint_name  = f"{_VAR_KEY}_{SESSION}",
         early_stopping   = _args.early_stopping,   ###CHANGED
         es_patience      = _args.es_patience,      ###CHANGED
@@ -1546,10 +1546,21 @@ else:
 _n_wm = weight_matrix.shape[0]   # e.g. 850 when n_valid=883, CHUNK_SIZE=50
 _bin_beh_for_decode = bin_beh_v[:_n_wm]   # safe: chunks always cover 0..n_wm-1
 
+# ── Single-split decode (train_idx / test_idx from ADVI setup) ───────────────
 _, obs_beh, pred_beh, metrics_beh = sliding_window_decoder(  ###CHANGED  # capture obs_beh (windowed y_test) to match pred_beh shape
     weight_matrix, _bin_beh_for_decode, train_idx, test_idx, behavior_type="continuous"
 )
-print(f"\n{BEHAVIOR_VAR} decoding  R2={metrics_beh['r2']:.3f}  corr={metrics_beh['corr']:.3f}")
+print(f"\n{BEHAVIOR_VAR} decoding (single split)  R2={metrics_beh['r2']:.3f}  corr={metrics_beh['corr']:.3f}")
+
+# ── 5-fold contiguous CV decode (Zhang et al. paper method) ──────────────────
+# Uses ALL _n_wm trials; ADVI weight_matrix provides the features.
+# Folds are time-contiguous to prevent autocorrelation leakage across seam.
+print(f"\n{BEHAVIOR_VAR} 5-fold contiguous CV decoding ...")
+cv_results = kfold_sliding_window_decoder(
+    weight_matrix, _bin_beh_for_decode, n_folds=5
+)
+print(f"{BEHAVIOR_VAR} CV R²={cv_results['mean_r2']:+.4f} ± {cv_results['std_r2']:.4f}  "
+      f"corr={cv_results['mean_corr']:.4f}  MSE={cv_results['mean_mse']:.4f}")
 
 
 # %%
@@ -1627,7 +1638,7 @@ for _pi, _ci in enumerate(_unique_chunks):
 
 plt.tight_layout()
 
-print(f"\n{BEHAVIOR_VAR}:  R2={metrics_beh['r2']:.3f}  corr={metrics_beh['corr']:.3f}  MSE={metrics_beh['mse']:.3f}")
+print(f"\n{BEHAVIOR_VAR} (single split):  R2={metrics_beh['r2']:.3f}  corr={metrics_beh['corr']:.3f}  MSE={metrics_beh['mse']:.3f}")
 
 
 # %%
@@ -1654,6 +1665,9 @@ np.savez_compressed(
     trial_ends       = trial_ends[valid_trials_beh],
     T_TRIAL          = np.float32(T_TRIAL),
     N_T_BINS         = np.int32(N_T_BINS),
+    cv_fold_r2       = cv_results['fold_r2'],
+    cv_fold_corr     = cv_results['fold_corr'],
+    cv_fold_mse      = cv_results['fold_mse'],
 )
 print(f"Arrays   -> {_decode_npz}")
 
@@ -1675,17 +1689,34 @@ summary_lines = [
         f"{trial_ends[valid_trials_beh[test_idx[-1]]]:.1f} s",
     f"  Drift corr    : DREDge ({MOTION_DIR})",
     f"",
-    f"--- {BEHAVIOR_VAR} decoding ---",
+    f"--- {BEHAVIOR_VAR} decoding (single train/test split) ---",
     f"  R2   : {metrics_beh['r2']:.4f}",
     f"  corr : {metrics_beh['corr']:.4f}",
     f"  MSE  : {metrics_beh['mse']:.4f}",
+    f"",
+    f"--- {BEHAVIOR_VAR} decoding (5-fold contiguous CV) ---",
+    f"  mean R2  : {cv_results['mean_r2']:+.4f} ± {cv_results['std_r2']:.4f}",
+    f"  per-fold : {' '.join(f'{v:+.3f}' for v in cv_results['fold_r2'])}",
+    f"  mean corr: {cv_results['mean_corr']:.4f}",
+    f"  mean MSE : {cv_results['mean_mse']:.4f}",
 ]
 with open(_decode_txt, 'w') as _f:
     _f.write('\n'.join(summary_lines) + '\n')
 print(f"Summary  -> {_decode_txt}")
 
 # ── 4. Update params JSON with final results ──────────────────────────────────
-_params['results'] = {BEHAVIOR_VAR: {k: float(v) for k, v in metrics_beh.items()}}
+_params['results'] = {
+    BEHAVIOR_VAR: {
+        'single_split': {k: float(v) for k, v in metrics_beh.items()},
+        'cv_5fold': {
+            'mean_r2':   float(cv_results['mean_r2']),
+            'std_r2':    float(cv_results['std_r2']),
+            'mean_corr': float(cv_results['mean_corr']),
+            'mean_mse':  float(cv_results['mean_mse']),
+            'fold_r2':   cv_results['fold_r2'].tolist(),
+        },
+    }
+}
 _params['completed'] = _ts_now
 with open(_params_json, 'w') as _f:
     json.dump(_params, _f, indent=2)
