@@ -54,17 +54,17 @@ _ap.add_argument('--t_trial',       type=float, default=1.5,
                  help='Trial window length in seconds (default 1.5)')
 _ap.add_argument('--n_t_bins',      type=int,   default=30,
                  help='Number of time bins per window (default 30)')
-_ap.add_argument('--learning_rate', type=float, default=1e-5,
-                 help='ADVI learning rate (default 2e-4)') ### changed from 1e-3
+_ap.add_argument('--learning_rate', type=float, default=1e-3,
+                 help='ADVI learning rate (default 1e-3)') 
 _ap.add_argument('--n_workers',     type=int,   default=16,
                  help='Number of parallel workers (default 16)')
-_ap.add_argument('--chunk_size',    type=int,   default=50,          ###CHANGED
+_ap.add_argument('--chunk_size',    type=int,   default=50,         
                  help='Trials per chunk for interleaved train/test split (default 50); '  ###CHANGED
                       'set to 0 to use the original contiguous 80/20 split')  ###CHANGED
 _ap.add_argument('--early_stopping', action='store_true', default=True,  ###CHANGED
                  help='Enable EMA-patience early stopping in ADVI training')  ###CHANGED
-_ap.add_argument('--es_patience',   type=int,   default=500,          ###CHANGED
-                 help='Early stopping patience in iterations (default 500)')  ###CHANGED
+_ap.add_argument('--es_patience',   type=int,   default=2000,         ###CHANGED  raised from 200
+                 help='Early stopping patience in iterations (default 2000)')  ###CHANGED
 _args = _ap.parse_args()
 
 DF_DIR = r"/ptmp/gongt/behaviour"
@@ -87,7 +87,7 @@ _beh_key_dir = _args.behavior_var.lower().replace(' ', '_')
 RESULTS_DIR  = os.path.join(
     BASE_DIR,
     "density_decoding",
-    f"{_beh_key_dir}_{_args.n_t_bins}bins_{_args.t_trial:.3g}s"
+    f"{_beh_key_dir}_{_args.n_t_bins}bins_{_args.t_trial:.3g}s_orig"
 )
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
@@ -1301,6 +1301,7 @@ else:
         device           = device,
         n_workers        = N_WORKERS,
         checkpoint_dir   = RESULTS_DIR,
+        max_iter         = 15000,
         checkpoint_name  = f"{_VAR_KEY}_{SESSION}",
         early_stopping   = _args.early_stopping,   ###CHANGED
         es_patience      = _args.es_patience,      ###CHANGED
@@ -1430,54 +1431,91 @@ else:
     print(f"[INFO] post_params checkpoint not found — skipping putative neuron plot.\n"
           f"       (expected: {_post_params_path})")
 
+# ── weight_matrix covers only the chunk-complete trials (n_chunks * CHUNK_SIZE).
+# bin_beh_v has all n_valid rows; slice it to match so sliding_window_decoder
+# can reshape (n_wm * n_windows_per_trial) correctly.
+_n_wm = weight_matrix.shape[0]   # e.g. 850 when n_valid=883, CHUNK_SIZE=50
+_bin_beh_for_decode = bin_beh_v[:_n_wm]   # safe: chunks always cover 0..n_wm-1
+
 _, obs_beh, pred_beh, metrics_beh = sliding_window_decoder(  ###CHANGED  # capture obs_beh (windowed y_test) to match pred_beh shape
-    weight_matrix, bin_beh_v, train_idx, test_idx, behavior_type="continuous"
+    weight_matrix, _bin_beh_for_decode, train_idx, test_idx, behavior_type="continuous"
 )
 print(f"\n{BEHAVIOR_VAR} decoding  R2={metrics_beh['r2']:.3f}  corr={metrics_beh['corr']:.3f}")
 
 
 # %%
 
-# ── VISUALISE DECODED vs OBSERVED (test set) ──────────────────────────────────
-# t_test_start = trial_starts[valid_trials_beh[test_idx[0]]]   ###CHANGED (commented out — meaningless for chunked split)
-# t_test_end   = trial_ends[valid_trials_beh[test_idx[-1]]]    ###CHANGED
-_test_abs_starts = np.array([trial_starts[valid_trials_beh[i]] for i in test_idx])  ###CHANGED
-_test_abs_ends   = np.array([trial_ends[valid_trials_beh[i]]   for i in test_idx])  ###CHANGED
-t_test_start = _test_abs_starts.min()   ###CHANGED
-t_test_end   = _test_abs_ends.max()     ###CHANGED
-_split_label = (f"chunked {CHUNK_SIZE}-trial blocks"   ###CHANGED
-                if CHUNK_SIZE > 0 and n_valid >= CHUNK_SIZE  ###CHANGED
-                else "contiguous last 20%")  ###CHANGED
+# ── VISUALISE DECODED vs OBSERVED — one panel per test chunk ──────────────────
+# sliding_window: window_size=7 → half_window=3, n_windows=N_T_BINS-3+1.
+# Per trial only bins [half_win : n_win] are predicted (25 bins for 30-bin trials).
+_half_win    = 7 // 2
+_n_win       = N_T_BINS - _half_win + 1
+_n_pred_bins = _n_win - _half_win           # predicted bins per trial (= 25)
+_bin_dur     = T_TRIAL / N_T_BINS           # seconds per bin
+_bin_offsets = np.arange(_half_win, _n_win) * _bin_dur  # (n_pred_bins,) time offsets within trial
 
-# sliding_window uses window_size=7 → half_window_size=3, n_windows=N_T_BINS-3+1=28.
-# Per trial, only bins j=3..27 (25 bins) are predicted; bins 0-2 and 28-29 are dropped.
-# The continuous np.arange approach accumulates 250ms drift per trial boundary
-# (plots 25×50ms=1250ms per trial but real time advances 1500ms), so build the
-# axis from per-trial absolute start times + bin offsets instead.
-_half_win    = 7 // 2                                   # = 3  (matches default window_size)
-_n_win       = N_T_BINS - _half_win + 1                 # = 28
-_bin_offsets = np.arange(_half_win, _n_win) * (T_TRIAL / N_T_BINS)  # (25,) offsets in s
-t_ax_beh     = np.concatenate([
-    trial_starts[valid_trials_beh[test_idx[i]]] + _bin_offsets
-    for i in range(len(test_idx))
-])
+_split_label = (f"chunked {CHUNK_SIZE}-trial blocks"
+                if CHUNK_SIZE > 0 and n_valid >= CHUNK_SIZE
+                else "contiguous last 20%")
 
-fig, ax = plt.subplots(figsize=(18, 3))
-fig.suptitle(
-    f"Density decoding — {SESSION} — {BEHAVIOR_VAR} — "
-    f"test: {t_test_start:.0f}–{t_test_end:.0f} s "
-    f"({(t_test_end-t_test_start)/60:.1f} min, {_split_label})",  ###CHANGED
-    fontsize=10
+# Re-identify which test windows belong to which chunk (group by chunk index).
+# test_idx values are row indices into valid_trials_beh; chunk index = test_idx // CHUNK_SIZE.
+if CHUNK_SIZE > 0 and n_valid >= CHUNK_SIZE:
+    _chunk_of_test = test_idx // CHUNK_SIZE
+    _unique_chunks = np.unique(_chunk_of_test)
+else:
+    # contiguous split: treat all test windows as a single "chunk"
+    _unique_chunks = np.array([0])
+    _chunk_of_test = np.zeros(len(test_idx), dtype=int)
+
+_n_chunks_plot = len(_unique_chunks)
+
+# pred_beh is (n_test, N_T_BINS); obs_beh is the flattened windowed y_test.
+# Reshape into (n_test, n_pred_bins) for easy per-trial indexing.
+_pred_by_trial = pred_beh.reshape(len(test_idx), _n_pred_bins)
+_obs_by_trial  = obs_beh.reshape(len(test_idx), _n_pred_bins)
+
+fig, axes = plt.subplots(
+    _n_chunks_plot, 1,
+    figsize=(18, max(2.2, 2.2 * _n_chunks_plot)),
+    squeeze=False,
 )
-# y_flat  = bin_beh_v[test_idx].ravel()  # un-windowed (10620,), mismatches pred_beh (8850,)
-y_flat  = obs_beh  ###CHANGED  # windowed y_test from decoder, matches pred_beh length
-pr_flat = pred_beh.ravel()
-ax.plot(t_ax_beh, y_flat,  color='darkgray', lw=0.6, label='observed')
-ax.plot(t_ax_beh, pr_flat, color='tab:blue', lw=0.6, alpha=0.85, label='decoded')
-ax.set_ylabel(BEHAVIOR_VAR, fontsize=9)
-ax.set_xlabel("Time from SpikeGLX gate open (s)", fontsize=9)
-ax.legend(fontsize=8, loc='upper right')
-ax.grid(True, alpha=0.2)
+fig.suptitle(
+    f"Density decoding — {SESSION} — {BEHAVIOR_VAR} ({_split_label})\n"
+    f"R²={metrics_beh['r2']:.3f}  corr={metrics_beh['corr']:.3f}  "
+    f"MSE={metrics_beh['mse']:.3f}  |  {_n_chunks_plot} test chunks",
+    fontsize=10, y=1.002,
+)
+
+for _pi, _ci in enumerate(_unique_chunks):
+    _mask = (_chunk_of_test == _ci)          # which test_idx positions belong to this chunk
+    _tidxs = np.where(_mask)[0]              # positions into test_idx / pred arrays
+
+    # absolute time axis for these test windows
+    _t_ax_chunk = np.concatenate([
+        trial_starts[valid_trials_beh[test_idx[_j]]] + _bin_offsets
+        for _j in _tidxs
+    ])
+    _obs_chunk  = _obs_by_trial[_tidxs].ravel()
+    _pred_chunk = _pred_by_trial[_tidxs].ravel()
+
+    _ax = axes[_pi, 0]
+    _ax.plot(_t_ax_chunk, _obs_chunk,  color='darkgray', lw=0.8, label='observed')
+    _ax.plot(_t_ax_chunk, _pred_chunk, color='tab:blue',  lw=0.8, alpha=0.85, label='decoded')
+
+    # shade each individual test trial so gaps are visible
+    for _j in _tidxs:
+        _ts = trial_starts[valid_trials_beh[test_idx[_j]]]
+        _te = trial_ends[valid_trials_beh[test_idx[_j]]]
+        _ax.axvspan(_ts, _te, color='lightyellow', alpha=0.45, zorder=0)
+
+    _ax.set_ylabel(BEHAVIOR_VAR, fontsize=8)
+    _ax.set_xlabel(f"Time from gate open (s)  [chunk {_ci}]", fontsize=8)
+    _ax.tick_params(labelsize=7)
+    _ax.grid(True, alpha=0.2)
+    if _pi == 0:
+        _ax.legend(fontsize=8, loc='upper right')
+
 plt.tight_layout()
 
 print(f"\n{BEHAVIOR_VAR}:  R2={metrics_beh['r2']:.3f}  corr={metrics_beh['corr']:.3f}  MSE={metrics_beh['mse']:.3f}")
@@ -1498,8 +1536,8 @@ plt.close(fig)
 # ── 2. Save arrays needed to reproduce/evaluate decoding ─────────────────────
 np.savez_compressed(
     _decode_npz,
-    bin_beh          = bin_beh_v,               # (n_valid, N_T_BINS)
-    pred_test        = pred_beh,                 # (n_test,  N_T_BINS)
+    bin_beh          = _bin_beh_for_decode,      # (n_wm, N_T_BINS) — rows matching weight_matrix
+    pred_test        = pred_beh,                 # (n_test, n_pred_bins)
     train_idx        = train_idx,
     test_idx         = test_idx,
     weight_matrix    = weight_matrix,
