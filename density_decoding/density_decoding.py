@@ -58,9 +58,13 @@ _ap.add_argument('--learning_rate', type=float, default=1e-3,
                  help='ADVI learning rate (default 1e-3)') 
 _ap.add_argument('--n_workers',     type=int,   default=16,
                  help='Number of parallel workers (default 16)')
+_ap.add_argument('--chunk_style',   choices=['contiguous', 'interleaved'], default='interleaved',  ###CHANGED_NEW
+                 help='Train/test split style: contiguous (80-20 at end) or interleaved (distributed, default)')
+_ap.add_argument('--test_percentage', type=float, default=20,  ###CHANGED_NEW
+                 help='Percentage of data to use for testing (default 20, range 1-99)')
 _ap.add_argument('--chunk_size',    type=int,   default=50,         
                  help='Trials per chunk for interleaved train/test split (default 50); '  ###CHANGED
-                      'set to 0 to use the original contiguous 80/20 split')  ###CHANGED
+                      'only used when chunk_style=interleaved')  ###CHANGED
 _ap.add_argument('--early_stopping', action='store_true', default=True,  ###CHANGED
                  help='Enable EMA-patience early stopping in ADVI training')  ###CHANGED
 _ap.add_argument('--es_patience',   type=int,   default=2000,         ###CHANGED  raised from 200
@@ -824,7 +828,7 @@ trial_starts = np.arange(T_OV_START, T_OV_END - T_TRIAL, T_TRIAL)
 trial_ends   = trial_starts + T_TRIAL
 n_trials_beh = len(trial_starts)
 print(f"\nWindow length : {T_TRIAL} s  x  {N_T_BINS} bins = {T_TRIAL/N_T_BINS*1000:.0f} ms/bin")
-print(f"Number of windows : {n_trials_beh}  (~{n_trials_beh*0.8:.0f} train, ~{n_trials_beh*0.2:.0f} test)")
+print(f"Number of windows : {n_trials_beh}  (~{n_trials_beh*TRAIN_FRAC:.0f} train, ~{n_trials_beh*TEST_FRAC:.0f} test)")
 
 # ── 4. Save params JSON (before any heavy compute) ────────────────────────────
 _VAR_KEY     = BEHAVIOR_VAR.lower().replace(' ', '_')
@@ -841,7 +845,10 @@ _params = {
         "ms_per_bin":    float(T_TRIAL / N_T_BINS * 1000),
         "LEARNING_RATE": float(LEARNING_RATE),
         "N_WORKERS":     int(N_WORKERS),
-        "train_frac":    0.8,
+        "chunk_style":   CHUNK_STYLE,  ###CHANGED_NEW
+        "test_percentage": float(TEST_PERCENTAGE),  ###CHANGED_NEW
+        "train_frac":    float(TRAIN_FRAC),  ###CHANGED_NEW
+        "test_frac":     float(TEST_FRAC),  ###CHANGED_NEW
     },
     "data": {
         "PREPROC_DIR":      PREPROC_DIR,
@@ -972,12 +979,18 @@ n_valid  = len(valid_trials_beh)
 # train_idx = np.arange(n_train)                               ###CHANGED
 # test_idx  = np.arange(n_train, n_valid)                      ###CHANGED
 
+CHUNK_STYLE = _args.chunk_style  ###CHANGED_NEW
+TEST_PERCENTAGE = _args.test_percentage  ###CHANGED_NEW
+if TEST_PERCENTAGE <= 0 or TEST_PERCENTAGE >= 100:  ###CHANGED_NEW
+    raise ValueError(f"test_percentage must be in range (0, 100), got {TEST_PERCENTAGE}")
+TEST_FRAC = TEST_PERCENTAGE / 100.0  ###CHANGED_NEW
+TRAIN_FRAC = 1.0 - TEST_FRAC  ###CHANGED_NEW
 CHUNK_SIZE = _args.chunk_size  ###CHANGED
-if CHUNK_SIZE > 0 and n_valid >= CHUNK_SIZE:  ###CHANGED  # interleaved chunked split
+if CHUNK_STYLE == 'interleaved' and n_valid >= CHUNK_SIZE:  ###CHANGED_NEW  # interleaved chunked split
     # Divide valid trials into blocks of CHUNK_SIZE.
-    # Within each block: first 80% → train, last 20% → test.
+    # Within each block: first (100-test_percentage)% → train, last test_percentage% → test.
     # This distributes test windows evenly across the full recording.
-    _n_test_per_chunk  = max(1, int(round(CHUNK_SIZE * 0.2)))  ###CHANGED
+    _n_test_per_chunk  = max(1, int(round(CHUNK_SIZE * TEST_FRAC)))  ###CHANGED_NEW
     _n_train_per_chunk = CHUNK_SIZE - _n_test_per_chunk        ###CHANGED
     train_idx = np.concatenate([                               ###CHANGED
         np.arange(c * CHUNK_SIZE,                             ###CHANGED
@@ -991,15 +1004,15 @@ if CHUNK_SIZE > 0 and n_valid >= CHUNK_SIZE:  ###CHANGED  # interleaved chunked 
         for c in range(n_valid // CHUNK_SIZE)                 ###CHANGED
     ])                                                         ###CHANGED
     _n_chunks = n_valid // CHUNK_SIZE                         ###CHANGED
-    print(f"\nChunked split ({_n_chunks} chunks x {CHUNK_SIZE} trials, "  ###CHANGED
+    print(f"\nTrain/test split (style='{CHUNK_STYLE}', test={TEST_PERCENTAGE:.0f}%, {_n_chunks} chunks x {CHUNK_SIZE} trials, "  ###CHANGED_NEW
           f"{_n_train_per_chunk} train + {_n_test_per_chunk} test per chunk)")  ###CHANGED
-    print(f"  train: {len(train_idx)} windows  |  test: {len(test_idx)} windows")  ###CHANGED
-else:                                                          ###CHANGED  # fallback: contiguous split
-    _n_train = int(n_valid * 0.8)                             ###CHANGED
+    print(f"  train: {len(train_idx)} windows ({TRAIN_FRAC*100:.0f}%)  |  test: {len(test_idx)} windows ({TEST_PERCENTAGE:.0f}%)")  ###CHANGED_NEW
+else:                                                          ###CHANGED  # contiguous split
+    _n_train = int(n_valid * TRAIN_FRAC)                       ###CHANGED_NEW
     train_idx = np.arange(_n_train)                           ###CHANGED
     test_idx  = np.arange(_n_train, n_valid)                  ###CHANGED
-    print(f"\nContiguous 80/20 split (chunk_size={CHUNK_SIZE} → fallback)")  ###CHANGED
-    print(f"  train: {len(train_idx)} windows  |  test: {len(test_idx)} windows")  ###CHANGED
+    print(f"\nTrain/test split (style='{CHUNK_STYLE}', test={TEST_PERCENTAGE:.0f}%)")  ###CHANGED_NEW
+    print(f"  train: {len(train_idx)} windows ({TRAIN_FRAC*100:.0f}%)  |  test: {len(test_idx)} windows ({TEST_PERCENTAGE:.0f}%)")  ###CHANGED_NEW
     if n_valid > 0:                                           ###CHANGED
         print(f"  train covers {trial_starts[valid_trials_beh[0]]:.1f} – "  ###CHANGED
               f"{trial_ends[valid_trials_beh[_n_train-1]]:.1f} s")  ###CHANGED
