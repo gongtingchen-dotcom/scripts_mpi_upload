@@ -67,7 +67,7 @@ _ap.add_argument('--chunk_size',    type=int,   default=50,
                       'only used when chunk_style=interleaved')
 _ap.add_argument('--early_stopping', action=_argparse.BooleanOptionalAction, default=True,
                  help='Enable EMA-patience early stopping in ADVI training (--no-early-stopping to disable)')
-_ap.add_argument('--es_patience',   type=int,   default=800,
+_ap.add_argument('--es_patience',   type=int,   default=1000,
                  help='Early stopping patience in iterations (default 1000)')
 _ap.add_argument('--zscore_spike_features', action=_argparse.BooleanOptionalAction, default=True,
                  help='Z-score x, z, and ptp independently before GMM/ADVI fitting. '
@@ -77,6 +77,12 @@ _ap.add_argument('--zscore_spike_features', action=_argparse.BooleanOptionalActi
 _ap.add_argument('--embargo_trials',  type=int,   default=1,       # NEW
                  help='Number of trials to drop from training on each side of every CV test '
                       'block boundary (default 1; set 0 to disable).')
+_ap.add_argument('--animal_speed_gate', type=float, default=0.0,   ###CHANGED
+                 help='If > 0, drop trial windows where the animal mean speed exceeds this '   ###CHANGED
+                      'threshold (units match the "speed" column in texture_pca_df, '          ###CHANGED
+                      'typically px/frame or normalised). '                                    ###CHANGED
+                      'Keeps only stationary periods. 0 = off (default). '                    ###CHANGED
+                      'Ported from rrr_texture_neural.py animal-speed gate.')                  ###CHANGED
 _args = _ap.parse_args()
 
 DF_DIR = r"/ptmp/gongt/behaviour"
@@ -97,11 +103,13 @@ LOC_FILE    = os.path.join(PREPROC_DIR, "thresholding_peaks", "localized_peaks_m
 MOTION_DIR  = os.path.join(PREPROC_DIR, "thresholding_peaks", "motion_estimates", "motion_dredge")  # NEW: defined upfront
 
 _beh_key_dir = _args.behavior_var.lower().replace(' ', '_')
+_speedgate_tag = f"_gate{_args.animal_speed_gate:.3g}" if _args.animal_speed_gate > 0 else ""  ###CHANGED
 RESULTS_DIR  = os.path.join(
     BASE_DIR,
     "density_decoding",
     f"{_beh_key_dir}_{_args.n_t_bins}bins_{_args.t_trial:.3g}s_{_args.chunk_style}_"
-    f"{'zscoreboth' if _args.zscore_spike_features else 'nozscore'}_embargo{_args.embargo_trials}"  # NEW: nozscore variant + embargo in dir name
+    f"{'zscoreboth' if _args.zscore_spike_features else 'nozscore'}_embargo{_args.embargo_trials}"
+    f"{_speedgate_tag}"                                                                        ###CHANGED
 )
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
@@ -887,6 +895,8 @@ _params = {
         "train_frac":    float(TRAIN_FRAC),
         "test_frac":     float(TEST_FRAC),
         "embargo_trials": int(_args.embargo_trials),  # NEW
+        "animal_speed_gate": float(ANIMAL_SPEED_GATE), ###CHANGED
+        "animal_speed_gate_info": _speed_gate_info,    ###CHANGED
         "zscore_spike_features": ZSCORE_SPIKE_FEATURES,
         "spike_feature_zscore_params": _zscore_params_sf,
     },
@@ -967,6 +977,39 @@ bin_beh_all = data_loader.process_behaviors(
 valid_mask_beh  = ~np.isnan(bin_beh_all).any(axis=1)
 valid_trials_beh = np.where(valid_mask_beh)[0]
 print(f"Valid windows (no NaN in {BEHAVIOR_VAR}): {valid_mask_beh.sum()} / {n_trials_beh}")
+
+# ── Animal speed gate (ported from rrr_texture_neural.py) ────────────────────  ###CHANGED
+# Drop trial windows where the animal is moving (mean speed over window > threshold).  ###CHANGED
+# Uses the 'speed' column already present in texture_pca_df.                     ###CHANGED
+ANIMAL_SPEED_GATE = _args.animal_speed_gate                                     ###CHANGED
+_speed_gate_info  = dict(used=False)                                            ###CHANGED
+if ANIMAL_SPEED_GATE > 0:                                                       ###CHANGED
+    if beh_spd is None:                                                         ###CHANGED
+        print("[SPEED GATE] WARNING: 'speed' column not found in df — gate DISABLED.") ###CHANGED
+        ANIMAL_SPEED_GATE = 0.0                                                 ###CHANGED
+    else:                                                                       ###CHANGED
+        # Per-window mean animal speed (avg beh_spd over each trial window)     ###CHANGED
+        _win_spd = np.array([                                                   ###CHANGED
+            np.nanmean(beh_spd[                                                 ###CHANGED
+                (beh_t >= trial_starts[k]) & (beh_t < trial_ends[k])           ###CHANGED
+            ]) for k in range(n_trials_beh)                                     ###CHANGED
+        ])                                                                      ###CHANGED
+        _speed_gate_mask = _win_spd < ANIMAL_SPEED_GATE                        ###CHANGED
+        # Combine with existing NaN-based validity mask                         ###CHANGED
+        valid_mask_beh   = valid_mask_beh & _speed_gate_mask                   ###CHANGED
+        valid_trials_beh = np.where(valid_mask_beh)[0]                         ###CHANGED
+        _n_dropped_spd   = int((~_speed_gate_mask).sum())                      ###CHANGED
+        _speed_gate_info = dict(                                                ###CHANGED
+            used=True, threshold=float(ANIMAL_SPEED_GATE),                     ###CHANGED
+            n_total=int(n_trials_beh), n_kept=int(valid_mask_beh.sum()),       ###CHANGED
+            n_dropped_speed=_n_dropped_spd,                                    ###CHANGED
+            pct_stationary=100.0 * valid_mask_beh.sum() / max(n_trials_beh, 1) ###CHANGED
+        )                                                                       ###CHANGED
+        print(f"[SPEED GATE] threshold={ANIMAL_SPEED_GATE:.4g} → "             ###CHANGED
+              f"{valid_mask_beh.sum()} / {n_trials_beh} windows kept "         ###CHANGED
+              f"({_speed_gate_info['pct_stationary']:.1f}% stationary); "      ###CHANGED
+              f"{_n_dropped_spd} dropped for animal motion")                   ###CHANGED
+print(f"Valid windows after all filters: {valid_mask_beh.sum()} / {n_trials_beh}")  ###CHANGED
 
 # ── 2. Spike bins (cached, independent of variable choice) ────────────────────
 if os.path.exists(SPIKE_CKPT):
@@ -1669,6 +1712,7 @@ summary_lines = [
     f"  Test period   : {trial_starts[valid_trials_beh[test_idx[0]]]:.1f} – "
         f"{trial_ends[valid_trials_beh[test_idx[-1]]]:.1f} s",
     f"  Embargo trials: {_args.embargo_trials}",  # NEW
+    f"  Speed gate    : {'threshold=%.4g (%.1f%% windows kept)' % (ANIMAL_SPEED_GATE, _speed_gate_info.get('pct_stationary', 100.0)) if ANIMAL_SPEED_GATE > 0 else 'OFF'}",  ###CHANGED
     f"  Drift corr    : DREDge ({MOTION_DIR})",
     f"",
     f"--- {BEHAVIOR_VAR} decoding (single train/test split) ---",
