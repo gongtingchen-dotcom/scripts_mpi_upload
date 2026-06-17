@@ -895,8 +895,7 @@ _params = {
         "train_frac":    float(TRAIN_FRAC),
         "test_frac":     float(TEST_FRAC),
         "embargo_trials": int(_args.embargo_trials),  # NEW
-        "animal_speed_gate": float(ANIMAL_SPEED_GATE), ###CHANGED
-        "animal_speed_gate_info": _speed_gate_info,    ###CHANGED
+        "animal_speed_gate": float(_args.animal_speed_gate), ###CHANGED (use arg directly; ANIMAL_SPEED_GATE not yet defined here)
         "zscore_spike_features": ZSCORE_SPIKE_FEATURES,
         "spike_feature_zscore_params": _zscore_params_sf,
     },
@@ -1255,7 +1254,7 @@ if not os.path.exists(_insp_path):
 # ── DENSITY DECODING ──────────────────────────────────────────────────────────
 import torch
 from density_decoding.decode_pipeline import decode_pipeline
-from density_decoding.decoders.behavior_decoder import sliding_window_decoder, kfold_sliding_window_decoder
+from density_decoding.decoders.behavior_decoder import sliding_window_decoder
 
 print("=" * 60)
 print("GPU / DEVICE CHECK")
@@ -1572,21 +1571,18 @@ else:
 _n_wm = weight_matrix.shape[0]
 _bin_beh_for_decode = bin_beh_v[:_n_wm]
 
-# ── Single-split decode (train_idx / test_idx from ADVI setup) ───────────────
-print(f"\n[DECODE] Running single-split decoding ...")
+# ── Decode on held-out test windows (same split used for ADVI — genuinely unseen) ──
+# train_idx / test_idx were passed to decode_pipeline, so ADVI never saw y_tk
+# for test_idx trials. This is the only metric reported.
+print(f"\n[DECODE] Running decoder on held-out test windows ...")
 _, obs_beh, pred_beh, metrics_beh = sliding_window_decoder(
-    weight_matrix, _bin_beh_for_decode, train_idx, test_idx, behavior_type="continuous"
+    weight_matrix, _bin_beh_for_decode, train_idx, test_idx,
+    behavior_type="continuous", verbose=False,
 )
-print(f"\n{BEHAVIOR_VAR} decoding (single split)  R2={metrics_beh['r2']:.3f}  corr={metrics_beh['corr']:.3f}")
-
-# ── 5-fold contiguous CV decode (Zhang et al. paper method) ──────────────────
-print(f"\n{BEHAVIOR_VAR} 5-fold contiguous CV decoding ...")
-cv_results = kfold_sliding_window_decoder(
-    weight_matrix, _bin_beh_for_decode, n_folds=5,
-    embargo_trials=_args.embargo_trials,              # NEW: pass embargo
-)
-print(f"{BEHAVIOR_VAR} CV R²={cv_results['mean_r2']:+.4f} ± {cv_results['std_r2']:.4f}  "
-      f"corr={cv_results['mean_corr']:.4f}  MSE={cv_results['mean_mse']:.4f}")
+print(f"\n{'='*52}")
+print(f"  {BEHAVIOR_VAR}  R² = {metrics_beh['r2']:+.4f}   r = {metrics_beh['corr']:.4f}")
+print(f"  (n_test={len(test_idx)} windows, held out from ADVI + ridge)")
+print(f"{'='*52}\n")
 
 
 # %%
@@ -1625,14 +1621,11 @@ if not os.path.exists(_fig_path):
         squeeze=False,
     )
 
-    # NEW: richer suptitle includes CV fold R² list (from new pipeline)
-    _fold_r2_str = ", ".join([f"{x:+.3f}" for x in cv_results['fold_r2']])
+    # Plot title: R² on genuinely held-out test windows (same split as ADVI)
     fig.suptitle(
-        f"Density decoding — {SESSION} — {BEHAVIOR_VAR} ({_split_label})\n"
-        f"Single split  |  R²={metrics_beh['r2']:+.4f}  corr={metrics_beh['corr']:.4f}  MSE={metrics_beh['mse']:.4f}\n"
-        f"5-fold CV     |  mean R²={cv_results['mean_r2']:+.4f} ± {cv_results['std_r2']:.4f}  "
-        f"mean corr={cv_results['mean_corr']:.4f}  mean MSE={cv_results['mean_mse']:.4f}\n"
-        f"CV folds R²   |  [{_fold_r2_str}]",
+        f"Density decoding — {SESSION} — {BEHAVIOR_VAR}\n"
+        f"R² = {metrics_beh['r2']:+.4f}   r = {metrics_beh['corr']:.4f}"
+        f"  ({len(test_idx)} test windows, held out from ADVI + ridge)",
         fontsize=10, y=1.002,
     )
 
@@ -1668,8 +1661,6 @@ if not os.path.exists(_fig_path):
     print(f"Figure   -> {_fig_path}")
     plt.close(fig)
 
-print(f"\n{BEHAVIOR_VAR} (single split):  R2={metrics_beh['r2']:.3f}  corr={metrics_beh['corr']:.3f}  MSE={metrics_beh['mse']:.3f}")
-
 
 # %%
 
@@ -1680,8 +1671,9 @@ _decode_txt = os.path.join(RESULTS_DIR, f'decode_results_{_VAR_KEY}_{SESSION}.tx
 # ── 1. Save arrays needed to reproduce/evaluate decoding ─────────────────────
 np.savez_compressed(
     _decode_npz,
-    bin_beh          = _bin_beh_for_decode,      # (n_wm, N_T_BINS) — rows matching weight_matrix
-    pred_test        = pred_beh,                 # (n_test, n_pred_bins)
+    bin_beh          = _bin_beh_for_decode,
+    obs_test         = obs_beh,
+    pred_test        = pred_beh,
     train_idx        = train_idx,
     test_idx         = test_idx,
     weight_matrix    = weight_matrix,
@@ -1689,9 +1681,6 @@ np.savez_compressed(
     trial_ends       = trial_ends[valid_trials_beh],
     T_TRIAL          = np.float32(T_TRIAL),
     N_T_BINS         = np.int32(N_T_BINS),
-    cv_fold_r2       = cv_results['fold_r2'],
-    cv_fold_corr     = cv_results['fold_corr'],
-    cv_fold_mse      = cv_results['fold_mse'],
 )
 print(f"Arrays   -> {_decode_npz}")
 
@@ -1715,32 +1704,24 @@ summary_lines = [
     f"  Speed gate    : {'threshold=%.4g (%.1f%% windows kept)' % (ANIMAL_SPEED_GATE, _speed_gate_info.get('pct_stationary', 100.0)) if ANIMAL_SPEED_GATE > 0 else 'OFF'}",  ###CHANGED
     f"  Drift corr    : DREDge ({MOTION_DIR})",
     f"",
-    f"--- {BEHAVIOR_VAR} decoding (single train/test split) ---",
-    f"  R2   : {metrics_beh['r2']:.4f}",
-    f"  corr : {metrics_beh['corr']:.4f}",
-    f"  MSE  : {metrics_beh['mse']:.4f}",
-    f"",
-    f"--- {BEHAVIOR_VAR} decoding (5-fold contiguous CV) ---",
-    f"  mean R2  : {cv_results['mean_r2']:+.4f} ± {cv_results['std_r2']:.4f}",
-    f"  per-fold : {' '.join(f'{v:+.3f}' for v in cv_results['fold_r2'])}",
-    f"  mean corr: {cv_results['mean_corr']:.4f}",
-    f"  mean MSE : {cv_results['mean_mse']:.4f}",
+    f"--- {BEHAVIOR_VAR} decoding ---",
+    f"  R²      : {metrics_beh['r2']:+.4f}",
+    f"  r       : {metrics_beh['corr']:.4f}",
+    f"  n_test  : {len(test_idx)} windows (held out from ADVI + ridge)",
 ]
 with open(_decode_txt, 'w') as _f:
     _f.write('\n'.join(summary_lines) + '\n')
 print(f"Summary  -> {_decode_txt}")
 
 # ── 3. Update params JSON with final results ──────────────────────────────────
+_params['decode']['animal_speed_gate_info'] = _speed_gate_info   ###CHANGED
 _params['results'] = {
     BEHAVIOR_VAR: {
-        'single_split': {k: float(v) for k, v in metrics_beh.items()},
-        'cv_5fold': {
-            'mean_r2':   float(cv_results['mean_r2']),
-            'std_r2':    float(cv_results['std_r2']),
-            'mean_corr': float(cv_results['mean_corr']),
-            'mean_mse':  float(cv_results['mean_mse']),
-            'fold_r2':   cv_results['fold_r2'].tolist(),
-        },
+        'r2':    float(metrics_beh['r2']),
+        'corr':  float(metrics_beh['corr']),
+        'mse':   float(metrics_beh['mse']),
+        'n_test_windows': int(len(test_idx)),
+        'note':  'metrics computed on test_idx only — same split used for ADVI training',
     }
 }
 _params['completed'] = _ts_now
