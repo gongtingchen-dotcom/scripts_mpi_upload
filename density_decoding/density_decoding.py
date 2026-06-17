@@ -795,21 +795,23 @@ ZSCORE_SPIKE_FEATURES = _args.zscore_spike_features
 if ZSCORE_SPIKE_FEATURES:
     _sf_mean = spike_features.mean(axis=0)
     _sf_std  = spike_features.std(axis=0)
-    _sf_std[_sf_std < 1e-9] = 1.0   # guard against constant features
-    spike_features = ((spike_features - _sf_mean) / _sf_std).astype(np.float32)
-    print(f"[ZSCORE] Spike features z-scored (per column):")
+    _sf_std[_sf_std < 1e-9] = 1.0
+    print(f"[ZSCORE] Spike features BEFORE z-score:")
     print(f"  means : x={_sf_mean[0]:.3f}  z={_sf_mean[1]:.3f}  ptp={_sf_mean[2]:.3f}")
     print(f"  stds  : x={_sf_std[0]:.3f}  z={_sf_std[1]:.3f}  ptp={_sf_std[2]:.3f}")
-    print(f"  after : x=[{spike_features[:,0].min():.2f}, {spike_features[:,0].max():.2f}]  "
-          f"z=[{spike_features[:,1].min():.2f}, {spike_features[:,1].max():.2f}]  "
-          f"ptp=[{spike_features[:,2].min():.2f}, {spike_features[:,2].max():.2f}]")
+    
+    spike_features = ((spike_features - _sf_mean) / _sf_std).astype(np.float32)
+    print(f"[ZSCORE] Spike features AFTER z-score:")
+    print(f"  means : x={spike_features[:,0].mean():.4f}  z={spike_features[:,1].mean():.4f}  ptp={spike_features[:,2].mean():.4f}")
+    print(f"  stds  : x={spike_features[:,0].std():.4f}  z={spike_features[:,1].std():.4f}  ptp={spike_features[:,2].std():.4f}")
+    
     _zscore_params_sf = {
         'x_mean': float(_sf_mean[0]),  'x_std': float(_sf_std[0]),
         'z_mean': float(_sf_mean[1]),  'z_std': float(_sf_std[1]),
         'ptp_mean': float(_sf_mean[2]),'ptp_std': float(_sf_std[2]),
     }
 else:
-    print("[ZSCORE] Spike features NOT z-scored (pass --zscore_spike_features to enable).")
+    print("[ZSCORE] Spike features NOT z-scored.")
     _zscore_params_sf = None
 
 # %% [markdown]
@@ -844,17 +846,14 @@ beh_raw = beh[BEHAVIOR_VAR].values.astype(np.float32)   # (n_frames,)
 
 if Z_SCORE_BEH:
     beh_z = zscore(beh_raw, nan_policy='omit').astype(np.float32)
+    print(f"Original {BEHAVIOR_VAR}:")
+    print(f"mean={np.nanmean(beh_raw):.6f} std={np.nanstd(beh_raw):.6f}")
+    print(f"[ZSCORE] {BEHAVIOR_VAR} AFTER z-score:")
+    print(f"  mean={np.nanmean(beh_z):.6f}  std={np.nanstd(beh_z):.6f}  "
+          f"min={np.nanmin(beh_z):.4f}  max={np.nanmax(beh_z):.4f}")
 else:
     beh_z = beh_raw.copy()
-
-print(f"{BEHAVIOR_VAR} raw : min={np.nanmin(beh_raw):.3f}  max={np.nanmax(beh_raw):.3f}  "
-      f"mean={np.nanmean(beh_raw):.3f}  std={np.nanstd(beh_raw):.3f}  "
-      f"nan={np.isnan(beh_raw).sum()}")
-if Z_SCORE_BEH:
-    print(f"{BEHAVIOR_VAR} zscored : min={np.nanmin(beh_z):.3f}  max={np.nanmax(beh_z):.3f}  "
-          f"mean={np.nanmean(beh_z):.6f}  std={np.nanstd(beh_z):.6f}")
-else:
-    print(f"  (z-scoring DISABLED — using raw behavioral values)")
+    print(f"[ZSCORE] {BEHAVIOR_VAR} NOT z-scored (using raw values).")
 
 # ── 2. Overlapping neural–behavioral window ───────────────────────────────────
 T_OV_START = max(beh_t.min(), ap_t_offset)
