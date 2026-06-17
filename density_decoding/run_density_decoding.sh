@@ -37,4 +37,4 @@ conda activate density_decoding
 # Python path should be passed as environment variable when submitting job
 PYTHON=${PYTHON_PATH:-$(which python)}
 
-python /u/gongt/scripts/density_decoding/density_decoding_trial_selection.py  --animal GLC6962 --exp _g_g0 --behavior_var PC3 --bin_size_ms 100 --selected_trials /ptmp/gongt/behaviour/GLC6962/GLC6962_g_g0/similar_trials_PC3_peak_rms0.9.csv --chunk_style interleaved
+python /u/gongt/scripts/density_decoding/density_decoding_trial_selection.py  --animal GLC6962 --exp _g_g0 --behavior_var PC3 --bin_size_ms 100 --selected_trials /ptmp/gongt/behaviour/GLC6962/GLC6962_g_g0/similar_trials_PC3_peak_rms0.9.csv --chunk_style contiguous
