@@ -70,7 +70,7 @@ _ap.add_argument('--chunk_style',   choices=['contiguous', 'interleaved'], defau
 _ap.add_argument('--test_percentage', type=float, default=20)
 _ap.add_argument('--chunk_size',    type=int,   default=50)
 _ap.add_argument('--early_stopping', action=_argparse.BooleanOptionalAction, default=True)
-_ap.add_argument('--es_patience',   type=int,   default=1000)
+_ap.add_argument('--es_patience',   type=int,   default=500)
 _ap.add_argument('--batch_size',    type=int,   default=32)
 _ap.add_argument('--zscore_spike_features', action=_argparse.BooleanOptionalAction, default=True)
 _ap.add_argument('--embargo_trials',  type=int, default=1)

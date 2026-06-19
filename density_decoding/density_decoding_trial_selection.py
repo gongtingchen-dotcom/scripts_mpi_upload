@@ -50,7 +50,7 @@ _ap.add_argument('--exp',           default='_g_g0',
                  help='Experiment suffix with leading underscore (e.g. _g_g0)')
 _ap.add_argument('--behavior_var',  default='PC1',
                  help='Behavioral variable to decode: PC1, PC2, texture_speed, …')
-_ap.add_argument('--t_trial',       type=float, default=1.5,
+_ap.add_argument('--t_trial',       type=float, default=5,
                  help='Trial window length in seconds (default 1.5). '
                       'Ignored when --selected_trials is provided (window length is '
                       'read from the CSV win_duration_sec column).')
@@ -65,13 +65,16 @@ _ap.add_argument('--chunk_style',   choices=['contiguous', 'interleaved'], defau
                  help='Train/test split style: contiguous (80-20 at end) or interleaved (distributed, default)')
 _ap.add_argument('--test_percentage', type=float, default=20,
                  help='Percentage of data to use for testing (default 20, range 1-99)')
-_ap.add_argument('--chunk_size',    type=int,   default=50,
+_ap.add_argument('--chunk_size',    type=int,   default=10,
                  help='Trials per chunk for interleaved train/test split (default 50); '
                       'only used when chunk_style=interleaved')
 _ap.add_argument('--early_stopping', action=_argparse.BooleanOptionalAction, default=True,
                  help='Enable EMA-patience early stopping in ADVI training (--no-early-stopping to disable)')
-_ap.add_argument('--es_patience',   type=int,   default=1000,
-                 help='Early stopping patience in iterations (default 1000)')
+_ap.add_argument('--es_patience',   type=int,   default=500,
+                 help='Early stopping patience in iterations (default 500)')
+_ap.add_argument('--batch_size',    type=int,   default=10,
+                 help='ADVI batch size in units of trials (default 10). '
+                      'Auto-shrunk to n_train_trials if smaller.')
 _ap.add_argument('--zscore_spike_features', action=_argparse.BooleanOptionalAction, default=True,
                  help='Z-score x, z, and ptp independently before GMM/ADVI fitting. '
                       'Recommended when features have very different scales (e.g. z in µm vs ptp in µV). '
@@ -92,8 +95,11 @@ _ap.add_argument('--selected_trials', default=None,
                       'as the trial windows instead of the regular sliding grid. '
                       'T_TRIAL and N_T_BINS are still respected (bin resolution), but '
                       'T_TRIAL is overridden by the window duration in the CSV.')
-_ap.add_argument('--batch_size', type=int, default=10,
-                 help='Batch size for ADVI training (default 32). Only used when --selected_trials is provided.')
+_ap.add_argument('--demean_beh', action=_argparse.BooleanOptionalAction, default=False,
+                 help='If set, subtract each trial\'s own mean from its binned behavioural '
+                      'trace before passing to the decoder. Removes slow within-trial drift '
+                      'so the decoder learns shape rather than absolute level. '
+                      'Applied after global z-scoring. Use --no-demean-beh to disable.')
 _args = _ap.parse_args()
 
 DF_DIR = r"/ptmp/gongt/behaviour"
@@ -122,12 +128,14 @@ if _args.selected_trials is not None:
     _sel_stem = os.path.splitext(os.path.basename(_args.selected_trials))[0]
     _selected_tag = f"_selected-{_sel_stem}"
 
+_demean_tag = "_demeanbeh" if _args.demean_beh else ""
+
 RESULTS_DIR = os.path.join(
     BASE_DIR,
     "density_decoding",
     f"{_beh_key_dir}_{_args.bin_size_ms:.3g}ms_{_args.t_trial:.3g}s_{_args.chunk_style}_"
     f"{'zscoreboth' if _args.zscore_spike_features else 'nozscore'}_embargo{_args.embargo_trials}"
-    f"{_speedgate_tag}{_selected_tag}"
+    f"{_speedgate_tag}{_selected_tag}{_demean_tag}"
 )
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
@@ -699,12 +707,10 @@ if ZSCORE_SPIKE_FEATURES:
     print(f"[ZSCORE] Spike features BEFORE z-score:")
     print(f"  means : x={_sf_mean[0]:.3f}  z={_sf_mean[1]:.3f}  ptp={_sf_mean[2]:.3f}")
     print(f"  stds  : x={_sf_std[0]:.3f}  z={_sf_std[1]:.3f}  ptp={_sf_std[2]:.3f}")
-    
     spike_features = ((spike_features - _sf_mean) / _sf_std).astype(np.float32)
     print(f"[ZSCORE] Spike features AFTER z-score:")
     print(f"  means : x={spike_features[:,0].mean():.4f}  z={spike_features[:,1].mean():.4f}  ptp={spike_features[:,2].mean():.4f}")
     print(f"  stds  : x={spike_features[:,0].std():.4f}  z={spike_features[:,1].std():.4f}  ptp={spike_features[:,2].std():.4f}")
-    
     _zscore_params_sf = {
         'x_mean': float(_sf_mean[0]),  'x_std': float(_sf_std[0]),
         'z_mean': float(_sf_mean[1]),  'z_std': float(_sf_std[1]),
@@ -728,7 +734,6 @@ print(f"Irregular gaps  : {len(_irregular)} / {len(_dt)} intervals")
 
 beh_raw = beh[BEHAVIOR_VAR].values.astype(np.float32)
 
- 
 if Z_SCORE_BEH:
     beh_z = zscore(beh_raw, nan_policy='omit').astype(np.float32)
     print(f"Original {BEHAVIOR_VAR}:")
@@ -739,7 +744,6 @@ if Z_SCORE_BEH:
 else:
     beh_z = beh_raw.copy()
     print(f"[ZSCORE] {BEHAVIOR_VAR} NOT z-scored (using raw values).")
- 
 
 T_OV_START = max(beh_t.min(), ap_t_offset)
 T_OV_END   = min(beh_t.max(), spike_t_gate.max())
@@ -816,6 +820,7 @@ else:
 CHUNK_STYLE     = _args.chunk_style
 CHUNK_SIZE      = _args.chunk_size
 TEST_PERCENTAGE = _args.test_percentage
+DEMEAN_BEH      = _args.demean_beh
 TEST_FRAC       = TEST_PERCENTAGE / 100.0
 TRAIN_FRAC      = 1.0 - TEST_FRAC
 print(f"Window length : {T_TRIAL} s  |  bin size {BIN_SIZE_MS:.3g} ms  →  {N_T_BINS} bins  "
@@ -849,6 +854,7 @@ _params = {
         "spike_feature_zscore_params": _zscore_params_sf,
         "using_selected_trials": USING_SELECTED_TRIALS,
         "selected_trials_meta": _sel_meta,
+        "demean_beh":    DEMEAN_BEH,
     },
     "data": {
         "PREPROC_DIR":      PREPROC_DIR,
@@ -881,28 +887,28 @@ print(f"\n[PARAMS] Saved -> {_params_json}")
 
 # ── behaviour overview plot (plot-guarded) ────────────────────────────────────
 _beh_plot_save = os.path.join(RESULTS_DIR, f'behaviour_overview_{_VAR_KEY}_{SESSION}.png')
-if not os.path.exists(_beh_plot_save):
-    print(f"[PLOT] Generating behaviour overview -> {_beh_plot_save}")
-    fig, ax = plt.subplots(figsize=(18, 2.5))
-    ax.plot(beh_t, beh_z, lw=0.4, color='tab:blue', alpha=0.7,
-            label=f"{BEHAVIOR_VAR}{'  (z-scored)' if Z_SCORE_BEH else ''}")
-    ax.axvspan(T_OV_START, T_OV_END, color='violet', alpha=0.08, label='Neural-behavioral overlap')
-    # mark selected trial windows if applicable
-    if USING_SELECTED_TRIALS:
-        for _ts_mark, _te_mark in zip(trial_starts, trial_ends):
-            ax.axvspan(_ts_mark, _te_mark, color='gold', alpha=0.25, zorder=0)
-        ax.axvspan(0, 0, color='gold', alpha=0.5, label='Selected trial windows')  # legend proxy
-    ax.set_xlabel("Time from SpikeGLX gate open (s)", fontsize=9)
-    ax.set_ylabel(BEHAVIOR_VAR, fontsize=9)
-    ax.set_title(f"Behaviour: {BEHAVIOR_VAR} ({animal} eink)"
-                 + ("  [selected trials highlighted]" if USING_SELECTED_TRIALS else ""),
-                 fontsize=9)
-    ax.legend(fontsize=8, loc='upper right')
-    ax.grid(True, alpha=0.2)
-    plt.tight_layout()
-    plt.savefig(_beh_plot_save, dpi=130, bbox_inches='tight')
-    print(f"Saved -> {_beh_plot_save}")
-    plt.close()
+# Always regenerate — demean flag or selected trials may have changed
+print(f"[PLOT] Generating behaviour overview -> {_beh_plot_save}")
+fig, ax = plt.subplots(figsize=(18, 2.5))
+ax.plot(beh_t, beh_z, lw=0.4, color='tab:blue', alpha=0.7,
+        label=f"{BEHAVIOR_VAR}{'  (z-scored)' if Z_SCORE_BEH else ''} [session-wide]")
+ax.axvspan(T_OV_START, T_OV_END, color='violet', alpha=0.08, label='Neural-behavioral overlap')
+if USING_SELECTED_TRIALS:
+    for _ts_mark, _te_mark in zip(trial_starts, trial_ends):
+        ax.axvspan(_ts_mark, _te_mark, color='gold', alpha=0.25, zorder=0)
+    ax.axvspan(0, 0, color='gold', alpha=0.5, label='Selected trial windows')  # legend proxy
+ax.set_xlabel("Time from SpikeGLX gate open (s)", fontsize=9)
+ax.set_ylabel(BEHAVIOR_VAR, fontsize=9)
+_title = (f"Behaviour: {BEHAVIOR_VAR} ({animal} eink)"
+          + ("  [selected trials highlighted]" if USING_SELECTED_TRIALS else "")
+          + ("  [per-trial mean will be subtracted before decoding]" if DEMEAN_BEH else ""))
+ax.set_title(_title, fontsize=9)
+ax.legend(fontsize=8, loc='upper right')
+ax.grid(True, alpha=0.2)
+plt.tight_layout()
+plt.savefig(_beh_plot_save, dpi=130, bbox_inches='tight')
+print(f"Saved -> {_beh_plot_save}")
+plt.close()
 
 # %%
 sys.path.insert(0, '/u/gongt/density_decoding')
@@ -992,7 +998,19 @@ else:
         }, _f, protocol=4)
     print(f"\n[CHECKPOINT] Saved -> {SPIKE_CKPT}")
 
-bin_beh_v = bin_beh_all[valid_mask_beh]
+bin_beh_v = bin_beh_all[valid_mask_beh]   # (n_valid, N_T_BINS)
+
+# ── per-trial demeaning of behaviour ─────────────────────────────────────────
+# Subtracts each trial's own mean across time bins so the decoder sees
+# shape/dynamics rather than absolute PC level.
+# Applied AFTER global z-scoring; the global scale is preserved.
+if DEMEAN_BEH:
+    _beh_trial_means = bin_beh_v.mean(axis=1, keepdims=True)   # (n_valid, 1)
+    bin_beh_v = bin_beh_v - _beh_trial_means
+    print(f"[DEMEAN_BEH] Subtracted per-trial mean from binned behaviour.")
+    print(f"  Post-demean: mean={bin_beh_v.mean():.6f}  std={bin_beh_v.std():.6f}  "
+          f"min={bin_beh_v.min():.4f}  max={bin_beh_v.max():.4f}")
+
 bin_sf_v  = [bin_spike_features_all[k] for k in valid_trials_beh]
 bin_ti_v, bin_tmi_v = [], []
 for new_k, k in enumerate(valid_trials_beh):
@@ -1005,6 +1023,13 @@ n_valid = len(valid_trials_beh)
 
 if TEST_PERCENTAGE <= 0 or TEST_PERCENTAGE >= 100:
     raise ValueError(f"test_percentage must be in range (0, 100), got {TEST_PERCENTAGE}")
+
+# auto-fallback: interleaved requires at least CHUNK_SIZE valid trials
+if CHUNK_STYLE == 'interleaved' and n_valid < CHUNK_SIZE:
+    print(f"\n[WARN] n_valid={n_valid} < CHUNK_SIZE={CHUNK_SIZE} — "
+          f"falling back to contiguous split (not enough trials for interleaved).")
+    CHUNK_STYLE = 'contiguous'
+
 if CHUNK_STYLE == 'interleaved' and n_valid >= CHUNK_SIZE:
     _n_test_per_chunk  = max(1, int(round(CHUNK_SIZE * TEST_FRAC)))
     _n_train_per_chunk = CHUNK_SIZE - _n_test_per_chunk
@@ -1029,6 +1054,18 @@ else:
     test_idx  = np.arange(_n_train, n_valid)
     print(f"\nTrain/test split (style='{CHUNK_STYLE}', test={TEST_PERCENTAGE:.0f}%)")
     print(f"  train: {len(train_idx)} windows  |  test: {len(test_idx)} windows")
+
+# ── interleaved split explanation ────────────────────────────────────────────
+# Within each chunk of CHUNK_SIZE trials, the LAST _n_test_per_chunk trials
+# are test, the rest are train. This distributes test trials evenly across
+# the session timeline rather than bunching them at the end.
+# Example with CHUNK_SIZE=50, test=20%: trials 0-39 train, 40-49 test,
+#   50-89 train, 90-99 test, etc.
+# Note: trial ORDER within valid_trials_beh is chronological (earliest trial
+# first), so test trials are temporally spread across the recording.
+if CHUNK_STYLE == 'interleaved':
+    print(f"  [interleaved detail] test trials are the last {_n_test_per_chunk} of each "
+          f"{CHUNK_SIZE}-trial chunk → distributed across session timeline")
 
 print(f"\nbin_beh_v shape : {bin_beh_v.shape}")
 
@@ -1118,12 +1155,16 @@ if not os.path.exists(_insp_path):
             ax_l.set_xlim(_t_row_start - _bin_size_s * 0.1,
                           _t_row_end   + _bin_size_s * 0.1)
 
+            # raw continuous trace — show beh_z (pre-demean) as context,
+            # labelled clearly; binned stairs show the actual decoder input
             ax_r.plot(beh_t[_bmask], beh_z[_bmask],
-                      color='darkgray', lw=0.7, alpha=0.9, zorder=4, label=f'{BEHAVIOR_VAR} raw')
+                      color='darkgray', lw=0.7, alpha=0.9, zorder=4,
+                      label=f'{BEHAVIOR_VAR} raw (pre-demean)' if DEMEAN_BEH else f'{BEHAVIOR_VAR} raw')
             for _ti, _be in enumerate(_all_bin_edges):
+                _lbl = (f'{BEHAVIOR_VAR} binned (demeaned)' if DEMEAN_BEH else f'{BEHAVIOR_VAR} binned') if _ti == 0 else None
                 ax_r.stairs(_all_binned_beh[_ti], _be, color='tab:orange', lw=1.8, zorder=5,
-                            baseline=None, label=f'{BEHAVIOR_VAR} binned' if _ti == 0 else None)
-            ax_r.set_ylabel(f'{BEHAVIOR_VAR} (z)', fontsize=8, color='tab:orange')
+                            baseline=None, label=_lbl)
+            ax_r.set_ylabel(f'{BEHAVIOR_VAR} ({"demeaned" if DEMEAN_BEH else "z"})', fontsize=8, color='tab:orange')
             ax_r.tick_params(axis='y', labelcolor='tab:orange', labelsize=7)
 
             ax_top = ax_l.twiny()
@@ -1277,6 +1318,17 @@ else:
     print(f"  Live ADVI loss plot → {_advi_live_plot}  (updated every 60 s)")
     print(f"  Live GLM  loss plot → {_glm_live_plot}  (updated every 30 s)")
 
+    # ── safe batch size: decode_pipeline batches over TRIALS (not spikes).
+    # list(zip(*(iter(train),)*batch_size)) returns [] when len(train) < batch_size
+    # → empty batch_idxs → crash in advi at batch_idxs[0].
+    _n_train_trials = len(train_idx)
+    _batch_size = min(_args.batch_size, max(1, _n_train_trials))
+    if _batch_size < _args.batch_size:
+        print(f"[WARN] Only {_n_train_trials} training trials — "
+              f"reducing batch_size from {_args.batch_size} to {_batch_size}")
+    else:
+        print(f"[INFO] batch_size={_batch_size}  ({_n_train_trials} training trials)")
+
     weight_matrix = decode_pipeline(
         data_loader,
         bin_sf_v,
@@ -1290,11 +1342,11 @@ else:
         device           = device,
         n_workers        = N_WORKERS,
         checkpoint_dir   = RESULTS_DIR,
-        max_iter         = 8000,
+        max_iter         = 7000,
         checkpoint_name  = f"{_VAR_KEY}_{SESSION}",
         early_stopping   = _args.early_stopping,
         es_patience      = _args.es_patience,
-        batch_size       = _args.batch_size
+        batch_size       = _batch_size,
     )
     _stop_monitor.set()
     np.save(WEIGHT_CKPT, weight_matrix)
@@ -1322,6 +1374,7 @@ if os.path.exists(_elbos_npz) and not os.path.exists(_loss_plot):
 # %%
 _post_params_path = os.path.join(RESULTS_DIR, f'ckpt_{_VAR_KEY}_{SESSION}_post_params.npz')
 _pn_save          = os.path.join(RESULTS_DIR, f'putative_neurons_{_VAR_KEY}_{SESSION}.png')
+_diag_save        = os.path.join(RESULTS_DIR, f'trial_diagnostics_{_VAR_KEY}_{SESSION}.png')
 if os.path.exists(_post_params_path) and not os.path.exists(_pn_save):
     print("\n[PUTATIVE NEURONS] Loading post_params ...")
     _pp          = np.load(_post_params_path)
@@ -1378,6 +1431,123 @@ if os.path.exists(_post_params_path) and not os.path.exists(_pn_save):
     print(f"Saved → {_pn_save}")
     plt.close(fig_pn)
 
+# ── TRIAL DIAGNOSTIC: beta heatmap + mean firing rate + mean behaviour ─────────
+# Three panels sharing the x-axis (time within trial in ms):
+#   Row 0: U @ V (GLM tuning coefficients, from post_params) — has negative values,
+#          matches advi_diagnostics. Falls back to weight_matrix mean if not available.
+#   Row 1: mean spike count per bin across training trials (individual traces + mean±SD)
+#   Row 2: mean binned behaviour per bin across training trials (individual traces + mean±SD)
+#
+# Colorbar is placed in a dedicated axes to the right so it does NOT steal width
+# from the imshow axes — all three rows stay x-aligned.
+# Always regenerate — bin_beh_v (and demean flag) may have changed
+print("[PLOT] Generating trial diagnostics ...")
+if True:
+    import matplotlib.gridspec as _gs
+    from mpl_toolkits.axes_grid1 import make_axes_locatable
+
+    _t_bins_ms_diag = np.arange(N_T_BINS) * (T_TRIAL / N_T_BINS * 1000)  # ms
+
+    # ── beta matrix: use U @ V (GLM tuning) from post_params if available ─────
+    # This matches advi_diagnostics and shows negative (inhibitory) tuning.
+    # weight_matrix is always positive (mixture weights) — wrong for this plot.
+    _post_params_path_diag = os.path.join(RESULTS_DIR,
+                                          f'ckpt_{_VAR_KEY}_{SESSION}_post_params.npz')
+    if os.path.exists(_post_params_path_diag):
+        _pp_diag   = np.load(_post_params_path_diag)
+        _beta_hmap = _pp_diag['U'] @ _pp_diag['V']   # (n_c, n_t) — GLM tuning coefficients
+        _beta_label = 'GLM tuning coefficient (U @ V)'
+        _beta_cmap  = 'RdBu_r'
+    else:
+        # fallback: mean posterior weight across training trials
+        _wm_train  = weight_matrix[train_idx]           # (n_train, n_c, n_t)
+        _beta_hmap = _wm_train.mean(axis=0)             # (n_c, n_t)
+        _beta_label = 'Mean posterior weight (weight_matrix)'
+        _beta_cmap  = 'hot_r'
+        print("  [WARN] post_params not found — using weight_matrix mean (no negative values)")
+    _bmax = float(np.percentile(np.abs(_beta_hmap), 99))
+
+    # ── spike counts per bin for training trials ──────────────────────────────
+    _spike_counts = np.zeros((len(train_idx), N_T_BINS))
+    for _new_k, _k in enumerate(train_idx):
+        for _tb in range(N_T_BINS):
+            _spike_counts[_new_k, _tb] = len(bin_sf_v[_k][_tb])
+    _sc_mean = _spike_counts.mean(axis=0)
+    _sc_std  = _spike_counts.std(axis=0)
+
+    # ── binned behaviour for training trials ──────────────────────────────────
+    _beh_train = bin_beh_v[train_idx]
+    _beh_mean  = _beh_train.mean(axis=0)
+    _beh_std   = _beh_train.std(axis=0)
+
+    # ── layout: 2-column gridspec — col 0 = plots (wide), col 1 = colorbar (thin)
+    # All three plot rows share x-axis. Colorbar only sits next to row 0.
+    fig_diag = plt.figure(figsize=(15, 11))
+    _spec = _gs.GridSpec(
+        3, 2, figure=fig_diag,
+        hspace=0.08, wspace=0.03,
+        height_ratios=[2.5, 1.5, 1.5],
+        width_ratios=[1, 0.03],
+    )
+    ax0  = fig_diag.add_subplot(_spec[0, 0])
+    ax1  = fig_diag.add_subplot(_spec[1, 0], sharex=ax0)
+    ax2  = fig_diag.add_subplot(_spec[2, 0], sharex=ax0)
+    ax_cb = fig_diag.add_subplot(_spec[0, 1])   # colorbar lives here
+
+    # make rows 1 and 2 colorbar columns invisible so layout is clean
+    fig_diag.add_subplot(_spec[1, 1]).set_visible(False)
+    fig_diag.add_subplot(_spec[2, 1]).set_visible(False)
+
+    fig_diag.suptitle(
+        f"{SESSION} - {BEHAVIOR_VAR} trial diagnostics\n"
+        f"training trials (n={len(train_idx)})  |  "
+        f"bin={T_TRIAL/N_T_BINS*1000:.0f} ms",
+        fontsize=11,
+    )
+
+    # row 0: beta heatmap
+    _im = ax0.imshow(
+        _beta_hmap, aspect='auto', cmap=_beta_cmap,
+        vmin=-_bmax, vmax=_bmax,
+        extent=[_t_bins_ms_diag[0], _t_bins_ms_diag[-1],
+                _beta_hmap.shape[0] - 0.5, -0.5],
+        interpolation='nearest',
+    )
+    plt.colorbar(_im, cax=ax_cb, label=_beta_label)
+    ax_cb.yaxis.set_label_position('right')
+    ax_cb.yaxis.tick_right()
+    ax0.set_ylabel('GMM component', fontsize=9)
+    ax0.set_title('Beta heatmap — ' + _beta_label, fontsize=9, loc='left')
+    plt.setp(ax0.get_xticklabels(), visible=False)
+
+    # row 1: spike counts — bar chart of mean per bin, error bars = 1 SD
+    _bar_width = (T_TRIAL / N_T_BINS * 1000) * 0.75   # 75% of bin width in ms
+    ax1.bar(_t_bins_ms_diag, _sc_mean, width=_bar_width,
+            color='steelblue', alpha=0.75, label='mean', zorder=3)
+    ax1.errorbar(_t_bins_ms_diag, _sc_mean, yerr=_sc_std,
+                 fmt='none', color='steelblue', elinewidth=1.2,
+                 capsize=2.5, alpha=0.9, zorder=4, label='± 1SD')
+    ax1.set_ylabel('Spikes / bin', fontsize=9)
+    ax1.legend(fontsize=8, loc='upper right')
+    ax1.grid(True, alpha=0.15, axis='y')
+    plt.setp(ax1.get_xticklabels(), visible=False)
+
+    # row 2: binned behaviour — individual trials (faint) + mean ± SD
+    for _ti in range(len(train_idx)):
+        ax2.plot(_t_bins_ms_diag, _beh_train[_ti], color='darkorange',
+                 alpha=0.15, lw=0.6)
+    ax2.fill_between(_t_bins_ms_diag, _beh_mean - _beh_std, _beh_mean + _beh_std,
+                     color='darkorange', alpha=0.25)
+    ax2.plot(_t_bins_ms_diag, _beh_mean, color='darkorange', lw=1.8, label='mean ± 1SD')
+    ax2.set_xlabel('Time within trial (ms)', fontsize=9)
+    ax2.set_ylabel(f'{BEHAVIOR_VAR} ({"demeaned" if DEMEAN_BEH else "z"})', fontsize=9)
+    ax2.legend(fontsize=8, loc='upper right')
+    ax2.grid(True, alpha=0.15)
+
+    plt.savefig(_diag_save, dpi=130, bbox_inches='tight')
+    print(f"Saved → {_diag_save}")
+    plt.close(fig_diag)
+
 _n_wm = weight_matrix.shape[0]
 _bin_beh_for_decode = bin_beh_v[:_n_wm]
 
@@ -1396,56 +1566,75 @@ print(f"{'='*52}\n")
 
 # %%
 _fig_path = os.path.join(RESULTS_DIR, f'decode_traces_{_VAR_KEY}_{SESSION}.png')
-if not os.path.exists(_fig_path):
-    print(f"[PLOT] Generating decoded vs observed traces -> {_fig_path}")
+# Always regenerate — decoder inputs may have changed
+print(f"[PLOT] Generating decoded vs observed traces -> {_fig_path}")
+if True:
+
+    # sliding_window_decoder uses a window of size 7 (half=3) so the first and
+    # last few bins of each trial have no prediction.
     _half_win    = 7 // 2
     _n_win       = N_T_BINS - _half_win + 1
-    _n_pred_bins = _n_win - _half_win
-    _bin_dur     = T_TRIAL / N_T_BINS
-    _bin_offsets = np.arange(_half_win, _n_win) * _bin_dur
+    _n_pred_bins = _n_win - _half_win          # predicted bins per trial
+    _bin_dur_s   = T_TRIAL / N_T_BINS
+    # bin centres relative to trial start for the predicted bins
+    _bin_offsets = np.arange(_half_win, _n_win) * _bin_dur_s   # (n_pred_bins,) in seconds
 
-    if CHUNK_STYLE == 'interleaved' and n_valid >= CHUNK_SIZE:
-        _chunk_of_test = test_idx // CHUNK_SIZE
-        _unique_chunks = np.unique(_chunk_of_test)
-    else:
-        _unique_chunks = np.array([0])
-        _chunk_of_test = np.zeros(len(test_idx), dtype=int)
+    _n_test = len(test_idx)
+    _pred_by_trial = pred_beh.reshape(_n_test, _n_pred_bins)   # (n_test, n_pred_bins)
+    _obs_by_trial  = obs_beh.reshape(_n_test, _n_pred_bins)
 
-    _pred_by_trial = pred_beh.reshape(len(test_idx), _n_pred_bins)
-    _obs_by_trial  = obs_beh.reshape(len(test_idx), _n_pred_bins)
+    # ── one panel per test trial ──────────────────────────────────────────────
+    # Panels are arranged in a grid: max 4 columns, rows as needed.
+    _ncols = min(4, _n_test)
+    _nrows = int(np.ceil(_n_test / _ncols))
+    _panel_w = max(3.5, T_TRIAL * 0.8)   # width scales with trial length
 
-    fig, axes = plt.subplots(len(_unique_chunks), 1,
-                              figsize=(18, max(2.2, 2.2 * len(_unique_chunks))),
-                              squeeze=False)
+    fig, axes = plt.subplots(
+        _nrows, _ncols,
+        figsize=(_ncols * _panel_w, _nrows * 3.0),
+        squeeze=False,
+        sharey=True,
+    )
     fig.suptitle(
         f"Density decoding — {SESSION} — {BEHAVIOR_VAR}\n"
         f"R² = {metrics_beh['r2']:+.4f}   r = {metrics_beh['corr']:.4f}"
-        f"  ({len(test_idx)} test windows)"
+        f"  ({_n_test} test trials, one panel each)"
         + (f"\n[selected: {_sel_meta['pc']} {_sel_meta['align_mode']}-aligned, "
            f"RMS ≤ {_sel_meta['rms_threshold']}, n={n_trials_beh}]"
            if USING_SELECTED_TRIALS else ""),
-        fontsize=10, y=1.002,
+        fontsize=10,
     )
 
-    for _pi, _ci in enumerate(_unique_chunks):
-        _mask   = (_chunk_of_test == _ci)
-        _tidxs  = np.where(_mask)[0]
-        _t_ax_chunk = np.concatenate([
-            trial_starts[valid_trials_beh[test_idx[_j]]] + _bin_offsets
-            for _j in _tidxs
-        ])
-        _ax = axes[_pi, 0]
-        _ax.plot(_t_ax_chunk, _obs_by_trial[_tidxs].ravel(),  color='darkgray', lw=0.8, label='observed')
-        _ax.plot(_t_ax_chunk, _pred_by_trial[_tidxs].ravel(), color='tab:blue',  lw=0.8, alpha=0.85, label='decoded')
-        for _j in _tidxs:
-            _ax.axvspan(trial_starts[valid_trials_beh[test_idx[_j]]],
-                        trial_ends[valid_trials_beh[test_idx[_j]]],
-                        color='lightyellow', alpha=0.45, zorder=0)
-        _ax.set_ylabel(BEHAVIOR_VAR, fontsize=8)
-        _ax.set_xlabel(f"Time from gate open (s)  [chunk {_ci}]", fontsize=8)
-        _ax.tick_params(labelsize=7);  _ax.grid(True, alpha=0.2)
-        if _pi == 0:
-            _ax.legend(fontsize=8, loc='upper right')
+    for _j in range(_n_test):
+        _row, _col = divmod(_j, _ncols)
+        _ax = axes[_row, _col]
+
+        # x-axis: time within trial in seconds (0 → T_TRIAL)
+        _t_within = _bin_offsets   # seconds from trial start
+
+        _ax.plot(_t_within, _obs_by_trial[_j],  color='darkgray', lw=1.2, label='observed')
+        _ax.plot(_t_within, _pred_by_trial[_j], color='tab:blue', lw=1.2,
+                 alpha=0.85, label='decoded')
+
+        _orig_trial = valid_trials_beh[test_idx[_j]]
+        _t_abs = trial_starts[_orig_trial]
+        _ax.set_title(
+            f"test trial {_j}  (t={_t_abs:.1f} s)",
+            fontsize=7, pad=2,
+        )
+        _ax.set_xlabel('Time within trial (s)', fontsize=7)
+        if _col == 0:
+            _ax.set_ylabel(f'{BEHAVIOR_VAR} ({"demeaned" if DEMEAN_BEH else "z"})', fontsize=7)
+        _ax.tick_params(labelsize=6)
+        _ax.grid(True, alpha=0.18)
+        _ax.set_xlim(0, T_TRIAL)
+        if _j == 0:
+            _ax.legend(fontsize=6, loc='upper right')
+
+    # hide unused panels
+    for _j in range(_n_test, _nrows * _ncols):
+        _row, _col = divmod(_j, _ncols)
+        axes[_row, _col].set_visible(False)
 
     plt.tight_layout()
     fig.savefig(_fig_path, dpi=130, bbox_inches='tight')
@@ -1485,6 +1674,7 @@ summary_lines = [
     f"  Embargo trials     : {_args.embargo_trials}",
     f"  Speed gate         : {'threshold=%.4g (%.1f%% kept)' % (ANIMAL_SPEED_GATE, _speed_gate_info.get('pct_stationary', 100.0)) if ANIMAL_SPEED_GATE > 0 else 'OFF'}",
     f"  Drift correction   : DREDge",
+    f"  Demean behaviour   : {'YES (per-trial mean subtracted)' if DEMEAN_BEH else 'NO'}",
     f"  Selected trials    : {'YES — ' + _args.selected_trials if USING_SELECTED_TRIALS else 'NO (regular grid)'}",
 ]
 if USING_SELECTED_TRIALS:

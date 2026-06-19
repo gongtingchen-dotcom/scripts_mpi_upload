@@ -30,8 +30,8 @@ behaviour_folder = "/ptmp/gongt/behaviour"
 animal = 'GLC6962'
 exp    = 'g_g0'
 
-MIN_DUR    = 7
-MAX_DUR    = 17
+MIN_DUR    = 5
+MAX_DUR    = 30
 WINDOW_SEC = MIN_DUR
 
 PC_COLS   = ['PC1', 'PC2', 'PC3']
@@ -42,9 +42,9 @@ PC_COLORS = {'PC1': 'royalblue', 'PC2': 'darkorange', 'PC3': 'mediumseagreen'}
 # The threshold is in the same units as the PC values, so it's interpretable
 # directly on the trace plots (shown as an envelope around the mean).
 RMS_THRESHOLDS = {
-    'PC1': 0.49,
+    'PC1': 0.5,
     'PC2': 1.5,
-    'PC3': 0.9,
+    'PC3': 0.8,
 }
 
 # ✏️  Set per-PC alignment after inspecting quick-look plots
@@ -54,7 +54,7 @@ ALIGN_MODES = {
     'PC3': 'peak',
 }
 
-PLOT_DIR = Path("/u/gongt/scripts/density_decoding/trial_filter")
+PLOT_DIR = Path("/ptmp/gongt/behaviour/GLC6962/GLC6962_g_g0/trial_filter")
 PLOT_DIR.mkdir(parents=True, exist_ok=True)
 
 # %% ── HELPERS ────────────────────────────────────────────────────────────────
