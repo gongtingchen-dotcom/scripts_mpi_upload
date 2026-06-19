@@ -25,9 +25,9 @@ PYTHON=${PYTHON_PATH:-$(which python)}
 # ── SETTINGS ── edit these ────────────────────────────────────────────────────
 ANIMAL="GLC6962"
 EXP="_g_g0"
-BEHAVIOR_VAR="PC1"
+BEHAVIOR_VAR="texture_speed"
 BIN_SIZE_MS=100
-SELECTED_TRIALS="/ptmp/gongt/behaviour/GLC6962/GLC6962_g_g0/similar_trials_PC1_peak_rms0.49.csv"
+SELECTED_TRIALS="/ptmp/gongt/behaviour/GLC6962/GLC6962_g_g0/similar_trials_texture_speed_peak_rms1.2.csv"
 CHUNK_STYLE="interleaved"
 N_SHUFFLES=100
 MIN_SHIFT_SEC=60

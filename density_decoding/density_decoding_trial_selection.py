@@ -80,7 +80,7 @@ _ap.add_argument('--zscore_spike_features', action=_argparse.BooleanOptionalActi
                       'Recommended when features have very different scales (e.g. z in µm vs ptp in µV). '
                       'Use --no-zscore-spike-features to disable. '
                       'If a spike-bins checkpoint already exists, delete it before toggling this flag.')
-_ap.add_argument('--embargo_trials',  type=int,   default=1,
+_ap.add_argument('--embargo_trials',  type=int,   default=0,
                  help='Number of trials to drop from training on each side of every CV test '
                       'block boundary (default 1; set 0 to disable).')
 _ap.add_argument('--animal_speed_gate', type=float, default=0.0,

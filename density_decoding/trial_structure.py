@@ -34,24 +34,25 @@ MIN_DUR    = 5
 MAX_DUR    = 30
 WINDOW_SEC = MIN_DUR
 
-PC_COLS   = ['PC1', 'PC2', 'PC3']
-PC_COLORS = {'PC1': 'royalblue', 'PC2': 'darkorange', 'PC3': 'mediumseagreen'}
+PC_COLS   = ['PC1', 'PC2', 'PC3', 'texture_speed']
+PC_COLORS = {'PC1': 'royalblue', 'PC2': 'darkorange', 'PC3': 'mediumseagreen',
+             'texture_speed': 'mediumpurple'}
 
 # ✏️  RMS threshold in PC units — per trial, RMS deviation from the group mean.
 # On first run leave as None to see the score distribution, then set values.
-# The threshold is in the same units as the PC values, so it's interpretable
-# directly on the trace plots (shown as an envelope around the mean).
 RMS_THRESHOLDS = {
-    'PC1': 0.5,
-    'PC2': 1.5,
-    'PC3': 0.8,
+    'PC1':           0.5,
+    'PC2':           1.5,
+    'PC3':           0.8,
+    'texture_speed': 1.2,
 }
 
 # ✏️  Set per-PC alignment after inspecting quick-look plots
 ALIGN_MODES = {
-    'PC1': 'peak',
-    'PC2': 'peak',
-    'PC3': 'peak',
+    'PC1':           'peak',
+    'PC2':           'peak',
+    'PC3':           'peak',
+    'texture_speed': 'peak',   # texture_speed has no clear peak — onset preferred
 }
 
 PLOT_DIR = Path("/ptmp/gongt/behaviour/GLC6962/GLC6962_g_g0/trial_filter")
@@ -66,7 +67,7 @@ def savefig(fig, name):
 
 def make_tag(pc, align, thr):
     thr_str = f"thr{thr}" if thr is not None else "thrNone"
-    return f"{animal}_{exp}_{pc}_{align}_dur{MIN_DUR}-{MAX_DUR}s_win{WINDOW_SEC}s_{thr_str}"
+    return f"{animal}_{exp}_{pc}_{align}_dur{MIN_DUR}s_{thr_str}"
 
 def rms_from_mean(traces):
     """
@@ -88,6 +89,18 @@ beh = texture_pca_df[
     (texture_pca_df['background'] == 'eink')
 ].copy()
 beh_t   = beh['time'].dt.total_seconds().values
+
+# guard: drop any col not present in the dataframe
+_missing_cols = [c for c in PC_COLS if c not in beh.columns]
+if _missing_cols:
+    print(f"[WARN] Columns not found in beh dataframe: {_missing_cols}")
+    print(f"  Available: {[c for c in beh.columns if any(k in c for k in ['PC','texture','speed'])]}")
+    PC_COLS        = [c for c in PC_COLS if c in beh.columns]
+    PC_COLORS      = {k: v for k, v in PC_COLORS.items()      if k in PC_COLS}
+    RMS_THRESHOLDS = {k: v for k, v in RMS_THRESHOLDS.items() if k in PC_COLS}
+    ALIGN_MODES    = {k: v for k, v in ALIGN_MODES.items()    if k in PC_COLS}
+    print(f"  Continuing with: {PC_COLS}")
+
 beh_arr = beh[PC_COLS].values.astype(float)
 
 dt        = float(np.median(np.diff(beh_t)))
@@ -235,8 +248,6 @@ for pc_col in PC_COLS:
     mean_trace   = np.nanmean(traces_demeaned, axis=0)
 
     # ── score distribution plot ───────────────────────────────────────────────
-    # left panel: traces coloured by RMS score (high = red, low = blue)
-    # right panel: RMS score histogram with threshold line
     score_norm = (trial_scores - trial_scores.min()) / (trial_scores.max() - trial_scores.min() + 1e-12)
     cmap_rms   = plt.cm.RdYlBu_r
 
@@ -249,7 +260,6 @@ for pc_col in PC_COLS:
     )
 
     ax = axes[0]
-    # sort so high-RMS (outlier) trials are drawn on top
     draw_order = np.argsort(trial_scores)
     for ti in draw_order:
         ax.plot(t_axis, traces_demeaned[ti], color=cmap_rms(score_norm[ti]),
@@ -307,7 +317,7 @@ for pc_col in PC_COLS:
     print(f"  Threshold = {thr}  →  "
           f"{keep_mask.sum()} selected / {len(traces_v)} total")
 
-    # ── before vs after: show demeaned traces so shape comparison is clear ─────
+    # ── before vs after: show demeaned traces ─────────────────────────────────
     traces_demeaned_sel = traces_demeaned[keep_mask]
 
     fig, axes = plt.subplots(1, 2, figsize=(14, 4), sharex=True, sharey=True)
@@ -342,7 +352,7 @@ for pc_col in PC_COLS:
     plt.tight_layout()
     savefig(fig, f"{tag}_before_vs_after_filter.png")
 
-    # ── trial average ± SD (selected, raw values for decoder context) ─────────
+    # ── trial average ± SD (selected, raw values) ─────────────────────────────
     fig, ax = plt.subplots(figsize=(10, 4))
     fig.suptitle(
         f'{animal} {exp} — {pc_col},  {align_mode}-aligned,  '
@@ -382,7 +392,7 @@ for pc_col in PC_COLS:
     })
 
     out_path = (f"{behaviour_folder}/{animal}/{animal}_{exp}/"
-                f"similar_trials_{pc_col}_{align_mode}_rms{thr}.csv")
+                f"similar_trials_{pc_col}_{align_mode}_dur{MIN_DUR}s.csv")
     out_df.to_csv(out_path, index=False)
     print(f"  Exported {len(out_df)} trials → {out_path}")
     print(out_df[['trial_original_idx', 'original_onset_sec', 'win_start_sec',
