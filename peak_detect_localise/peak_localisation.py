@@ -14,7 +14,7 @@ import spikeinterface.full as si
 from spikeinterface.sortingcomponents.peak_localization import localize_peaks
 import matplotlib.pyplot as plt
 from spikeinterface.sortingcomponents.motion import estimate_motion, interpolate_motion
-from scripts.peak_detect_localise.mua_pipeline import run_mua_pipeline, load_data as load_data_mua
+from peak_detect_localise.mua_pipeline import run_mua_pipeline, load_data as load_data_mua
 
 # %%
 # =============================================================================
@@ -24,6 +24,7 @@ from scripts.peak_detect_localise.mua_pipeline import run_mua_pipeline, load_dat
 parser = argparse.ArgumentParser(description='Peak Localization and Drift Correction Pipeline')
 parser.add_argument('--mua_detect_threshold', type=float, default=None,
                     help='MUA detection threshold (overrides config value)')
+parser.add_argument('--base_path', type=str, default=None)
 args = parser.parse_args()
 
 # %%
@@ -32,7 +33,7 @@ args = parser.parse_args()
 # =============================================================================
 
 # --- Data Paths ---
-BASE_PATH = r"/ptmp/gongt/GLC6962_l_g1/preprocessed"
+BASE_PATH = args.base_path
 PEAKS_FILENAME = "peaks_combined2.npy"  # In BASE_PATH/folder_name/
 
 # --- Data Source: Choose one mode ---
@@ -60,7 +61,7 @@ RUN_DECENTRALIZED_MOTION = False
 RUN_DREDGE_MOTION = True
 
 # --- Motion Correction (Interpolation) ---
-APPLY_MOTION_CORRECTION = False
+APPLY_MOTION_CORRECTION = True
 CORRECTION_METHOD = "dredge"  # "decentralized" or "dredge"
 
 # --- Re-detect Peaks After Correction (using mua_pipeline) ---
@@ -93,9 +94,10 @@ if args.mua_detect_threshold is not None:
 FOLDER_NAME = f"thresholding_peaks"
 if ROLLING_NOISE_DIR is not None:
     FOLDER_NAME += "_rolling"
-PLOTS_DIR = os.path.join(BASE_PATH, FOLDER_NAME, "plots")
-MOTION_DIR = os.path.join(BASE_PATH, FOLDER_NAME, "motion_estimates")
-print(f"Peaks will be saved to folder: {FOLDER_NAME}")
+if BASE_PATH is not None:
+    PLOTS_DIR = os.path.join(BASE_PATH, FOLDER_NAME, "plots")
+    MOTION_DIR = os.path.join(BASE_PATH, FOLDER_NAME, "motion_estimates")
+    print(f"Peaks will be saved to folder: {FOLDER_NAME}")
 
 # --- Plotting Parameters ---
 SCATTER_WINDOW_S = 720  # seconds: each scatter shows first N s and last N s
@@ -166,12 +168,17 @@ PLOT_DPI = 300  # DPI for saved plots
 # =============================================================================
 
 # Determine which file to load based on USE_TEMP_WH flag (without printing - avoids worker process spam)
-if USE_TEMP_WH:
-    BIN_PATH = os.path.join(BASE_PATH, 'temp_wh.dat')
-    LOAD_SOURCE = "temp_wh.dat"
+# Guard against None BASE_PATH (worker processes re-import this module without CLI args)
+if BASE_PATH is not None:
+    if USE_TEMP_WH:
+        BIN_PATH = os.path.join(BASE_PATH, 'temp_wh.dat')
+        LOAD_SOURCE = "temp_wh.dat"
+    else:
+        BIN_PATH = BASE_PATH
+        LOAD_SOURCE = "preprocessed folder"
 else:
-    BIN_PATH = BASE_PATH
-    LOAD_SOURCE = "preprocessed folder"
+    BIN_PATH = None
+    LOAD_SOURCE = None
 
 # %%
 # Create output directories (only if main process)

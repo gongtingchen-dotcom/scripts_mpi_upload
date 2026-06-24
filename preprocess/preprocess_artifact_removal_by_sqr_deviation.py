@@ -57,8 +57,8 @@ def _find_rec_dir(animal_tag, exp_tag):
     Raises FileNotFoundError with a listing if nothing is found.
     """
     exp_num = f'{animal_tag}_{exp_tag}'
-    # base    = f"/nexus/posix0/MBR-neuralsystems/ephys/{animal_tag}/{exp_num}"
-    base = f"/ptmp/gongt/{animal_tag}/{exp_num}"
+    base    = f"/nexus/posix0/MBR-neuralsystems/ephys/{animal_tag}/{exp_num}"
+    # base = f"/ptmp/gongt/{animal_tag}/{exp_num}"
     items   = os.listdir(base)
     for item in items:
         if "imec" in item:
@@ -79,16 +79,16 @@ if len(exp_tags) == 1:
     # ── single recording — original behaviour ─────────────────────────────
     exp_tag    = exp_tags[0]
     exp_num    = f'{animal_tag}_{exp_tag}'
-    base_folder = f"/ptmp/gongt/{animal_tag}/{exp_num}"
-    # base_folder = f"/nexus/posix0/MBR-neuralsystems/ephys/{animal_tag}/{exp_num}"
+    # base_folder = f"/ptmp/gongt/{animal_tag}/{exp_num}"
+    base_folder = f"/nexus/posix0/MBR-neuralsystems/ephys/{animal_tag}/{exp_num}"
     rec_dir    = _find_rec_dir(animal_tag, exp_tag)
 
 else:
     # ── multiple recordings — concatenate and save ────────────────────────
     joined_tag  = "_".join(exp_tags)
     exp_num     = f'{animal_tag}_{joined_tag}'
-    base_folder = f"/ptmp/gongt/{animal_tag}/{exp_num}"
-    # base_folder = f"/nexus/posix0/MBR-neuralsystems/ephys/{animal_tag}/{exp_num}"
+    # base_folder = f"/ptmp/gongt/{animal_tag}/{exp_num}"
+    base_folder = f"/nexus/posix0/MBR-neuralsystems/ephys/{animal_tag}/{exp_num}"
     concat_path = os.path.join(base_folder, "concat_rec")
     Path(base_folder).mkdir(parents=True, exist_ok=True)
 

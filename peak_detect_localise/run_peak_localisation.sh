@@ -10,14 +10,14 @@
 #
 # Number of nodes and MPI tasks per node:
 #SBATCH --constraint=gpu
-#SBATCH --gres=gpu:a100:4
+#SBATCH --gres=gpu:a100:2
 
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-core=1
 
 #SBATCH --cpus-per-task=18
 #
-#SBATCH --mem=500000  # Memory per node (in MB)
+#SBATCH --mem=250000  # Memory per node (in MB)
 #
 #SBATCH --mail-user=gong.tingchen@gmail.com
 #SBATCH --mail-type=BEGIN,END,FAIL
@@ -34,7 +34,9 @@
 #source /mpcdf/soft/SLE_15/packages/x86_64/anaconda/3/2023.03/etc/profile.d/conda.sh
 conda activate spikeinterface
 
+export PYTHONPATH="/u/gongt/scripts:$PYTHONPATH"
+
 # Python path should be passed as environment variable when submitting job
 PYTHON=${PYTHON_PATH:-$(which python)}
 
-python /u/gongt/scripts/peak_localisation.py --mua_detect_threshold 3.3
+python /u/gongt/scripts/peak_detect_localise/peak_localisation.py --mua_detect_threshold 3.3 --base_path /nexus/posix0/MBR-neuralsystems/ephys/GLC7248/GLC7248_a_g3/preprocessed

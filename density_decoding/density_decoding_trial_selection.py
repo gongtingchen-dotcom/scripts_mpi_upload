@@ -65,7 +65,7 @@ _ap.add_argument('--chunk_style',   choices=['contiguous', 'interleaved'], defau
                  help='Train/test split style: contiguous (80-20 at end) or interleaved (distributed, default)')
 _ap.add_argument('--test_percentage', type=float, default=20,
                  help='Percentage of data to use for testing (default 20, range 1-99)')
-_ap.add_argument('--chunk_size',    type=int,   default=10,
+_ap.add_argument('--chunk_size',    type=int,   default=50,
                  help='Trials per chunk for interleaved train/test split (default 50); '
                       'only used when chunk_style=interleaved')
 _ap.add_argument('--early_stopping', action=_argparse.BooleanOptionalAction, default=True,

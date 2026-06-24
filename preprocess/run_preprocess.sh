@@ -9,14 +9,14 @@
 #SBATCH -J preprocess
 
 #SBATCH --constraint=gpu
-#SBATCH --gres=gpu:a100:4
+#SBATCH --gres=gpu:a100:2
 
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 
-#SBATCH --cpus-per-task=64
+#SBATCH --cpus-per-task=36
 #
-#SBATCH --mem=500000  # Memory per node (in MB)
+#SBATCH --mem=250000  # Memory per node (in MB)
 #
 #SBATCH --mail-user=gong.tingchen@gmail.com
 #SBATCH --mail-type=BEGIN,END,FAIL
@@ -35,6 +35,6 @@ conda activate phy2
 # Python path should be passed as environment variable when submitting job
 PYTHON=${PYTHON_PATH:-$(which python)}
 
-python /u/gongt/scripts/preprocess_artifact_removal_by_sqr_deviation.py --animal_tag GLC7248 --exp_tag a_g1
+python /u/gongt/scripts/preprocess/preprocess_artifact_removal_by_sqr_deviation.py --animal_tag GLC7248 --exp_tag a_g3 --end_sec 6500
 
 # python /u/gongt/scripts/ironclust.py

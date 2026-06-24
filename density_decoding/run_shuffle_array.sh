@@ -30,15 +30,15 @@ BIN_SIZE_MS=100
 SELECTED_TRIALS="/ptmp/gongt/behaviour/GLC6962/GLC6962_g_g0/similar_trials_texture_speed_peak_rms1.2.csv"
 CHUNK_STYLE="interleaved"
 N_SHUFFLES=100
-MIN_SHIFT_SEC=60
 SEED=42
+SCRAMBLE_MODE="neural" # "neural" or "behavior" ==> neural not yet submitted
 # ─────────────────────────────────────────────────────────────────────────────
 
 mkdir -p ./slurm/${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}/logs
 
 echo "=== SHUFFLE ${SLURM_ARRAY_TASK_ID} / $((N_SHUFFLES - 1)) ==="
 
-$PYTHON /u/gongt/scripts/density_decoding/density_decoding_trial_selection_shuffle.py \
+$PYTHON /u/gongt/scripts/density_decoding/density_decoding_trial_selection_scramble.py \
     --animal          "$ANIMAL" \
     --exp             "$EXP" \
     --behavior_var    "$BEHAVIOR_VAR" \
@@ -47,5 +47,5 @@ $PYTHON /u/gongt/scripts/density_decoding/density_decoding_trial_selection_shuff
     --chunk_style     "$CHUNK_STYLE" \
     --n_shuffles      "$N_SHUFFLES" \
     --shuffle_index   "$SLURM_ARRAY_TASK_ID" \
-    --min_shift_sec   "$MIN_SHIFT_SEC" \
-    --seed            "$SEED"
+    --seed            "$SEED" \
+    --scramble_mode   "$SCRAMBLE_MODE"
