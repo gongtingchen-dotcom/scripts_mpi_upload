@@ -25,20 +25,20 @@ PYTHON=${PYTHON_PATH:-$(which python)}
 # ── SETTINGS ── edit these ────────────────────────────────────────────────────
 ANIMAL="GLC6962"
 EXP="_g_g0"
-BEHAVIOR_VAR="texture_speed"
+BEHAVIOR_VAR="PC1"
 BIN_SIZE_MS=100
-SELECTED_TRIALS="/ptmp/gongt/behaviour/GLC6962/GLC6962_g_g0/similar_trials_texture_speed_peak_rms1.2.csv"
+SELECTED_TRIALS="/ptmp/gongt/behaviour/GLC6962/GLC6962_g_g0/similar_trials_PC1_peak_rms0.5.csv"
 CHUNK_STYLE="interleaved"
 N_SHUFFLES=100
 SEED=42
-SCRAMBLE_MODE="neural" # "neural" or "behavior" ==> neural not yet submitted
+SCRAMBLE_MODE="behavior" 
 # ─────────────────────────────────────────────────────────────────────────────
 
 mkdir -p ./slurm/${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}/logs
 
 echo "=== SHUFFLE ${SLURM_ARRAY_TASK_ID} / $((N_SHUFFLES - 1)) ==="
 
-$PYTHON /u/gongt/scripts/density_decoding/density_decoding_trial_selection_scramble.py \
+$PYTHON /u/gongt/scripts/density_decoding/density_decoding_trial_selection_scramble_all.py \
     --animal          "$ANIMAL" \
     --exp             "$EXP" \
     --behavior_var    "$BEHAVIOR_VAR" \

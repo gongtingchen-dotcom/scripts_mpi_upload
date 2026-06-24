@@ -110,7 +110,7 @@ BASE_RESULTS_DIR = os.path.join(
     f"{'zscoreboth' if _args.zscore_spike_features else 'nozscore'}"
     f"_embargo{_args.embargo_trials}{_speedgate_tag}{_selected_tag}{_demean_tag}_chunksize{_args.chunk_size}"
 )
-SHUFFLE_DIR = BASE_RESULTS_DIR + f"_{SCRAMBLE_MODE}_scramble"
+SHUFFLE_DIR = BASE_RESULTS_DIR + f"_{SCRAMBLE_MODE}_scramble_all"
 os.makedirs(SHUFFLE_DIR, exist_ok=True)
 os.makedirs(BASE_RESULTS_DIR, exist_ok=True)
 
@@ -530,16 +530,27 @@ for _shuf_i in _run_indices:
 
     print(f"  Permutation (first 10): {perm[:10]}")
 
-    # ── apply scramble ────────────────────────────────────────────────────────
+    # ── step 1: scramble ALL valid trials (train + test) ─────────────────────
+    # Both train and test receive the same permutation so that:
+    #   - decode_pipeline (train only) sees scrambled training data
+    #   - sliding_window_decoder evaluates against scrambled test data
+    #     (not real behaviour) — this is the correct null distribution.
     if SCRAMBLE_MODE == 'neural':
-        bin_sf_feed, bin_ti_feed, bin_tmi_feed = _scramble_neural_bins(
+        bin_sf_all_s, bin_ti_all_s, bin_tmi_all_s = _scramble_neural_bins(
             bin_sf_v, bin_ti_v, bin_tmi_v, perm, N_T_BINS)
-        bin_beh_feed = bin_beh_v.copy()      # behaviour unchanged
+        bin_beh_all_s = bin_beh_v.copy()           # behaviour unchanged
     else:  # behavior
-        bin_sf_feed  = bin_sf_v              # neural unchanged
-        bin_ti_feed  = bin_ti_v
-        bin_tmi_feed = bin_tmi_v
-        bin_beh_feed = _scramble_behavior_bins(bin_beh_v, perm)
+        bin_sf_all_s  = bin_sf_v                   # neural unchanged
+        bin_ti_all_s  = bin_ti_v
+        bin_tmi_all_s = bin_tmi_v
+        bin_beh_all_s = _scramble_behavior_bins(bin_beh_v, perm)
+
+    _n_train_s = len(train_idx_fixed)
+    # pass the full scrambled arrays to decode_pipeline with the original
+    # train/test index split. GMM init uses spike geometry only (no behaviour),
+    # GLM init ridge just seeds beta — neither learns the behaviour-neural
+    # relationship that the scramble destroys. ADVI trains only on train_idx_fixed.
+    # test_idx_fixed is only used by the internal ridge .predict() for bookkeeping.
 
     # ── diagnostic plot (first 5 training trials) ─────────────────────────────
     _diag_path = os.path.join(_shuf_dir,
@@ -551,8 +562,8 @@ for _shuf_i in _run_indices:
             perm               = perm,
             bin_sf_orig        = bin_sf_v,
             bin_beh_orig       = bin_beh_v,
-            bin_sf_feed        = bin_sf_feed,
-            bin_beh_feed       = bin_beh_feed,
+            bin_sf_feed        = bin_sf_all_s,
+            bin_beh_feed       = bin_beh_all_s,
             train_idx          = train_idx_fixed,
             trial_starts_valid = trial_starts_valid,
             spike_t_gate_local = spike_t_gate,
@@ -568,13 +579,8 @@ for _shuf_i in _run_indices:
                               f'scramble_perm_{_VAR_KEY}_{SESSION}.npy')
     np.save(_perm_path, perm)
 
-    # ── symlink GMM + init_weight_matrix from real run ────────────────────────
-    for _src_name in [f"ckpt_{_VAR_KEY}_{SESSION}_gmm.pkl",
-                      f"ckpt_{_VAR_KEY}_{SESSION}_init_weight_matrix.npy"]:
-        _src = os.path.join(BASE_RESULTS_DIR, _src_name)
-        _dst = os.path.join(_shuf_dir, _src_name)
-        if os.path.exists(_src) and not os.path.exists(_dst):
-            os.symlink(_src, _dst)
+    # no GMM/GLM checkpoint symlinks — GMM and GLM initialised from scratch
+    # inside decode_pipeline using bin_sf_feed / bin_beh_feed (train, scrambled).
 
     # ── ADVI / GLM live loss monitors ─────────────────────────────────────────
     _advi_ckpt_s = os.path.join(_shuf_dir,
@@ -643,14 +649,17 @@ for _shuf_i in _run_indices:
                      daemon=True).start()
 
     # ── decode_pipeline ───────────────────────────────────────────────────────
-    _batch_size_s = min(_args.batch_size, max(1, len(train_idx_fixed)))
+    # Pass the full scrambled arrays with original train/test split.
+    # GMM init, GLM init (ridge), and ADVI all operate on scrambled data.
+    # No checkpoint symlinks — everything computed from scratch.
+    _batch_size_s = min(_args.batch_size, max(1, _n_train_s))
 
     weight_matrix_s = decode_pipeline(
         data_loader,
-        bin_sf_feed,
-        bin_ti_feed,
-        bin_tmi_feed,
-        bin_behaviors    = bin_beh_feed,
+        bin_sf_all_s,
+        bin_ti_all_s,
+        bin_tmi_all_s,
+        bin_behaviors    = bin_beh_all_s,
         behavior_type    = "continuous",
         train            = train_idx_fixed,
         test             = test_idx_fixed,
@@ -666,10 +675,12 @@ for _shuf_i in _run_indices:
     )
     _stop_s.set()
 
-    # ── decode: test against REAL unscrambled behaviour ───────────────────────
-    _n_wm_s = weight_matrix_s.shape[0]
+    # ── decode: evaluate test trials against SCRAMBLED behaviour ─────────────
+    # sliding_window_decoder uses weight_matrix_s (fit on scrambled train data)
+    # to predict on test trials, evaluated against bin_beh_all_s (scrambled).
+    # This is the correct null: decoder trained and tested on scrambled data.
     _, obs_s, pred_s, metrics_s = sliding_window_decoder(
-        weight_matrix_s, bin_beh_v[:_n_wm_s],   # ← real unscrambled beh
+        weight_matrix_s, bin_beh_all_s,
         train_idx_fixed, test_idx_fixed,
         behavior_type="continuous", verbose=False,
     )
