@@ -31,7 +31,7 @@ SELECTED_TRIALS="/ptmp/gongt/behaviour/GLC6962/GLC6962_g_g0/similar_trials_PC1_p
 CHUNK_STYLE="interleaved"
 N_SHUFFLES=100
 SEED=42
-SCRAMBLE_MODE="behavior" 
+SCRAMBLE_MODE="neural" 
 # ─────────────────────────────────────────────────────────────────────────────
 
 mkdir -p ./slurm/${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}/logs

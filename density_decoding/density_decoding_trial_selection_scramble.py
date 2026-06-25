@@ -1,24 +1,9 @@
 # %% [markdown]
 # #### **DENSITY DECODING — BIN SCRAMBLE NULL DISTRIBUTION**
 #
-# Instead of circularly shifting spike times (neural shuffle), this script
-# randomly permutes the TIME-BIN ORDER within each trial. Two modes:
+# This script has a bug, GLM and GMM initialization was done using un-scrambled data; use `density_decoding_trial_selection_scramble_all.py` instead 
 #
-#   --scramble_mode neural   : permute the spike bins within each trial
-#                              (behaviour stays in original order)
-#   --scramble_mode behavior : permute the behaviour bins within each trial
-#                              (neural data stays in original order)
-#
-# This breaks the within-trial temporal structure while preserving:
-#   - Which spikes / behaviour values exist in each trial (counts / levels unchanged)
-#   - The identity of which trial is train vs test
-#   - Cross-trial variability
-#
-# Scrambled data is saved per-shuffle so analyse_shuffles.py can reconstruct
-# exactly what was fed to the decoder.
-#
-# SLURM array: sbatch run_scramble_array.sh
-# (same pattern as neural shuffle — submit one index per job)
+#############################################################
 
 import sys, os, json, pickle, datetime, threading
 

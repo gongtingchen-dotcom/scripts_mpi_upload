@@ -33,9 +33,9 @@ plt.rcParams.update({
 # ── ARGS ──────────────────────────────────────────────────────────────────────
 ap = argparse.ArgumentParser()
 ap.add_argument('--shuffle_dir',
-    default='/nexus/posix0/MBR-neuralsystems/ephys/GLC6962/GLC6962_g_g0/density_decoding/texture_speed_100ms_5s_interleaved_zscoreboth_embargo0_selected-similar_trials_texture_speed_peak_rms1.2_chunksize10_behavior_scramble')
+    default='/nexus/posix0/MBR-neuralsystems/ephys/GLC6962/GLC6962_g_g0/density_decoding/pc1_100ms_5s_interleaved_zscoreboth_embargo0_selected-similar_trials_PC1_peak_rms0.5_chunksize10_neural_scramble_all')
 ap.add_argument('--real_results_dir', 
-    default='/nexus/posix0/MBR-neuralsystems/ephys/GLC6962/GLC6962_g_g0/density_decoding/texture_speed_100ms_5s_interleaved_zscoreboth_embargo0_selected-similar_trials_texture_speed_peak_rms1.2_chunksize10',
+    default='/nexus/posix0/MBR-neuralsystems/ephys/GLC6962/GLC6962_g_g0/density_decoding/pc1_100ms_5s_interleaved_zscoreboth_embargo0_selected-similar_trials_PC1_peak_rms0.5_chunksize10',
     help='Path to the real (non-shuffled) run results directory. '
          'If omitted, inferred by stripping the _neural_shuffle / '
          '_neural_scramble / _behavior_scramble suffix from shuffle_dir. '
