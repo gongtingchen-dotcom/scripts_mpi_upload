@@ -1,1 +1,4 @@
 /u/gongt/scripts/density_decoding/slurm
+/u/gongt/scripts/motion/slurm
+/u/gongt/scripts/peak_detect_localise/slurm
+/u/gongt/scripts/preprocess/slurm
