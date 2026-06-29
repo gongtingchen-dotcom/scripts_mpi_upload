@@ -1,16 +1,7 @@
 # %% [markdown]
 # #### **DENSITY DECODING — NEURAL CIRCULAR SHUFFLE NULL DISTRIBUTION**
 #
-# Shifts spike times circularly within the session overlap window.
-# Behaviour stays fixed and unshifted.
-# The decoder is trained on shifted neural data + real behaviour,
-# then predicts behaviour from shifted test-trial spikes.
-# Predictions are compared against real behaviour for those test windows.
-#
-# Directory layout:
-#   SHUFFLE_DIR/  (<base_results_dir>_neural_shuffle)
-#     shuffle_0/, shuffle_1/, …
-#     shuffle_results_summary.npz
+# There is a bug in that GLM and GMM initialization sees unshuffled data; use `density_decoding_trial_selection_shuffle_all.py` instead
 
 import sys, os, json, pickle, datetime, threading
 

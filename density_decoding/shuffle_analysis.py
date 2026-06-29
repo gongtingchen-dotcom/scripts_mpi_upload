@@ -33,7 +33,7 @@ plt.rcParams.update({
 # ── ARGS ──────────────────────────────────────────────────────────────────────
 ap = argparse.ArgumentParser()
 ap.add_argument('--shuffle_dir',
-    default='/nexus/posix0/MBR-neuralsystems/ephys/GLC6962/GLC6962_g_g0/density_decoding/pc1_100ms_5s_interleaved_zscoreboth_embargo0_selected-similar_trials_PC1_peak_rms0.5_chunksize10_neural_scramble_all')
+    default='/nexus/posix0/MBR-neuralsystems/ephys/GLC6962/GLC6962_g_g0/density_decoding/pc1_100ms_5s_interleaved_zscoreboth_embargo0_selected-similar_trials_PC1_peak_rms0.5_chunksize10_neural_shuffle_all')
 ap.add_argument('--real_results_dir', 
     default='/nexus/posix0/MBR-neuralsystems/ephys/GLC6962/GLC6962_g_g0/density_decoding/pc1_100ms_5s_interleaved_zscoreboth_embargo0_selected-similar_trials_PC1_peak_rms0.5_chunksize10',
     help='Path to the real (non-shuffled) run results directory. '
@@ -228,16 +228,36 @@ for tag, i in [('Best r',idx_best_r),('Worst r',idx_worst_r),
     print(f"  {tag:8s}: {_run_noun[:-1]} {int(ro.shuffle_index):3d}  "
           f"r={ro.r:+.4f}  R²={ro.r2:+.4f}{_extra}")
 
-# selected shuffles: use R² for selection (best R², worst R²; deduplicated)
+# selected shuffles: 2 best R² + 2 worst R² (deduplicated by shuffle index)
+_best_order = df.sort_values('r2', ascending=False).index.tolist()
+_worst_order = df.sort_values('r2', ascending=True).index.tolist()
+
 _seen = set()
 SELECTED_SHUFFLES = []   # list of (label, colour, df_idx)
-for lbl, (di, clr) in [
-    ('best R²',  (idx_best_r2,  'tab:green')),
-    ('worst R²', (idx_worst_r2, 'tab:red')),
-]:
-    si = int(df.loc[di, 'shuffle_index'])
-    if si not in _seen:
-        _seen.add(si); SELECTED_SHUFFLES.append((lbl, clr, di))
+
+def _add_selected(order, label_prefix, colors, max_n=2):
+    added = 0
+    for di in order:
+        if added >= max_n:
+            break
+        si = int(df.loc[di, 'shuffle_index'])
+        if si in _seen:
+            continue
+        _seen.add(si)
+        clr = colors[min(added, len(colors) - 1)]
+        SELECTED_SHUFFLES.append((f'{label_prefix} {added + 1}', clr, di))
+        added += 1
+
+_add_selected(_best_order, 'best R²', ['tab:green', 'mediumseagreen'], max_n=2)
+_add_selected(_worst_order, 'worst R²', ['tab:red', 'indianred'], max_n=2)
+
+print("[SELECTED] Runs for detailed plots:")
+for lbl, _, di in SELECTED_SHUFFLES:
+    ro = df.loc[di]
+    _extra = (f"shift={ro.shift_sec:.1f}s" if ANALYSIS_MODE == 'shuffle'
+              else f"mode={ro.scramble_mode}")
+    print(f"  {lbl:10s}: {_run_noun[:-1]} {int(ro.shuffle_index):3d}  "
+          f"R²={ro.r2:+.4f}  r={ro.r:+.4f}  {_extra}")
 
 # ── auto-load real r2/r now that BEH_VAR is known ────────────────────────────
 if args.real_r2 is None or args.real_r is None:
@@ -551,7 +571,10 @@ fig_tr.suptitle(
 _tr_runs = []
 
 # real run
-_tr_runs.append(('Real run', 'tab:blue', real_tr, 0.0, None))
+_real_overall = ''
+if args.real_r2 is not None and args.real_r is not None:
+    _real_overall = f'\nR²={args.real_r2:+.3f}  r={args.real_r:+.3f}  shift=0s'
+_tr_runs.append((f'Real run{_real_overall}', 'tab:blue', real_tr, 0.0, None))
 
 # selected shuffles/scrambles
 for lbl, clr, di in SELECTED_SHUFFLES:
@@ -569,7 +592,8 @@ for lbl, clr, di in SELECTED_SHUFFLES:
     _ss = float(ro['shift_sec'])
     _tr_runs.append((
         f'{lbl}  ({_run_noun[:-1]} {int(ro.shuffle_index)})\n'
-        f'R²={ro.r2:+.3f}  r={ro.r:+.3f}',
+        f'R²={ro.r2:+.3f}  r={ro.r:+.3f}  '
+        f'{("shift=" + format(_ss, ".0f") + "s") if ANALYSIS_MODE == "shuffle" else ("mode=" + str(ro.scramble_mode))}',
         clr, tr, _ss, _perm_run))
 
 # For the spike scatter we want to show TRAINING trial spikes
@@ -622,7 +646,7 @@ for run_i, (run_lbl, run_clr, tr_result, shift_s, perm) in enumerate(_tr_runs):
 
         ax_beh.tick_params(labelsize=5); ax_beh.grid(True, alpha=0.15)
         if j == 0:
-            ax_beh.set_ylabel(f'{run_lbl.split(chr(10))[0]}\n{BEH_VAR}', fontsize=6)
+            ax_beh.set_ylabel(f'{run_lbl}\n{BEH_VAR}', fontsize=6)
             if tr_result is not None:
                 ax_beh.legend(fontsize=4.5, loc='upper right')
         plt.setp(ax_beh.get_xticklabels(), visible=False)
@@ -718,7 +742,10 @@ def _load_wm(npz_path_or_dict):
 # Each case: (label, colour, decode_npz_or_dict, shift_sec_or_none, perm_or_none)
 _cases = []
 if real_d is not None:
-    _cases.append(('Real run', 'dimgray', real_d, 0.0, None))
+    _real_detail = ''
+    if args.real_r2 is not None and args.real_r is not None:
+        _real_detail = f'\nshift=0s  R²={args.real_r2:+.3f}  r={args.real_r:+.3f}'
+    _cases.append((f'Real run{_real_detail}', 'dimgray', real_d, 0.0, None))
 for lbl, clr, di in SELECTED_SHUFFLES:
     ro = df.loc[di]
     if ANALYSIS_MODE == 'shuffle':
@@ -901,13 +928,19 @@ else:
                     # GMM component centroids at right edge of trial window
                     if gmm_obj is not None and hasattr(gmm_obj, 'means_'):
                         _wm_t_mean = wm[_vp, :, :].mean(axis=1)  # (n_comp,)
-                        _wmax = _wm_t_mean.max() + 1e-9
-                        _sizes_gm = (_wm_t_mean / _wmax * 80).clip(1, 80)
-                        _x_centroids = np.full(n_comp, dur * 1.06)
-                        ax.scatter(_x_centroids, gmm_obj.means_[:, 1],
-                                   s=_sizes_gm, c=_wm_t_mean, cmap='hot_r',
-                                   alpha=0.8, edgecolors='k', linewidths=0.3,
-                                   zorder=5, clip_on=False)
+                        _gmm_z = np.asarray(gmm_obj.means_[:, 1]).ravel()
+                        # Guard against component-count mismatch between wm and GMM.
+                        _n_plot = min(len(_wm_t_mean), len(_gmm_z))
+                        if _n_plot > 0:
+                            _wm_plot = _wm_t_mean[:_n_plot]
+                            _z_plot = _gmm_z[:_n_plot]
+                            _wmax = np.nanmax(_wm_plot) + 1e-9
+                            _sizes_gm = (_wm_plot / _wmax * 80).clip(1, 80)
+                            _x_centroids = np.full(_n_plot, dur * 1.06)
+                            ax.scatter(_x_centroids, _z_plot,
+                                       s=_sizes_gm, c=_wm_plot, cmap='hot_r',
+                                       alpha=0.8, edgecolors='k', linewidths=0.3,
+                                       zorder=5, clip_on=False)
                 ax.set_xlim(-0.05 * dur, dur * 1.22)
                 ax.set_ylim(_z_all.min() * 0.95 if _z_all is not None else 0,
                             _z_all.max() * 1.05 if _z_all is not None else 4000)

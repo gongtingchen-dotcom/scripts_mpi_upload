@@ -560,17 +560,6 @@ for _shuf_i in _run_indices:
 
     _n_train_s  = len(train_idx_fixed)
     train_idx_s = np.arange(_n_train_s)            # 0..n_train-1
-    if _n_train_s < 2:
-        raise ValueError(
-            f"Need at least 2 training trials for decode_pipeline; got {_n_train_s}.")
-
-    # Internal split used only inside the training-only pipeline/evaluation.
-    # decode_pipeline currently expects a non-empty test index (Ridge predict).
-    _n_eval_test = max(1, int(round(_n_train_s * TEST_FRAC)))
-    if _n_eval_test >= _n_train_s:
-        _n_eval_test = _n_train_s - 1
-    eval_train_idx_s = np.arange(0, _n_train_s - _n_eval_test, dtype=np.int64)
-    eval_test_idx_s  = np.arange(_n_train_s - _n_eval_test, _n_train_s, dtype=np.int64)
 
     # ── diagnostic plot (first 5 training trials) ─────────────────────────────
     _diag_path = os.path.join(_shuf_dir,
@@ -681,8 +670,8 @@ for _shuf_i in _run_indices:
         bin_tmi_feed,
         bin_behaviors    = bin_beh_feed,
         behavior_type    = "continuous",
-        train            = eval_train_idx_s,
-        test             = eval_test_idx_s,
+        train            = train_idx_s,            # 0..n_train-1
+        test             = np.array([], dtype=np.int64),  # no test inside pipeline
         learning_rate    = LEARNING_RATE,
         device           = device,
         n_workers        = N_WORKERS,
@@ -706,8 +695,8 @@ for _shuf_i in _run_indices:
         "check decode_pipeline output shape."
     )
     _, obs_s, pred_s, metrics_s = sliding_window_decoder(
-        weight_matrix_s, bin_beh_feed,
-        eval_train_idx_s, eval_test_idx_s,
+        weight_matrix_s, bin_beh_all_s,            # scrambled beh, all n_valid trials
+        train_idx_fixed, test_idx_fixed,
         behavior_type="continuous", verbose=False,
     )
 
@@ -720,10 +709,8 @@ for _shuf_i in _run_indices:
         _shuf_done,
         obs_test      = obs_s,
         pred_test     = pred_s,
-        train_idx     = eval_train_idx_s,
-        test_idx      = eval_test_idx_s,
-        train_idx_global = train_idx_fixed,
-        test_idx_global  = test_idx_fixed,
+        train_idx     = train_idx_fixed,
+        test_idx      = test_idx_fixed,
         weight_matrix = weight_matrix_s,
         scramble_perm = perm,
         scramble_mode = np.bytes_(SCRAMBLE_MODE),

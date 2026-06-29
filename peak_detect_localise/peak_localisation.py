@@ -24,6 +24,8 @@ from peak_detect_localise.mua_pipeline import run_mua_pipeline, load_data as loa
 parser = argparse.ArgumentParser(description='Peak Localization and Drift Correction Pipeline')
 parser.add_argument('--mua_detect_threshold', type=float, default=None,
                     help='MUA detection threshold (overrides config value)')
+parser.add_argument('--mua_n_chunks', type=int, default=1,
+                    help='Split the full MUA peak-detection pipeline into this many time chunks (default: 1)')
 parser.add_argument('--base_path', type=str, default=None)
 args = parser.parse_args()
 
@@ -53,15 +55,15 @@ MOTION_DIR = None  # Set below, after FOLDER_NAME is determined
 LOAD_COMPUTED_DATA = True  # Set to False to recompute everything
 
 # --- Localization Methods to Run ---
-RUN_MONOPOLAR_TRIANGULATION = True
+RUN_MONOPOLAR_TRIANGULATION = False # need to set to true
 RUN_CENTER_OF_MASS = False
 
 # --- Motion Estimation Methods to Run ---
 RUN_DECENTRALIZED_MOTION = False
-RUN_DREDGE_MOTION = True
+RUN_DREDGE_MOTION = False # need to set to true
 
 # --- Motion Correction (Interpolation) ---
-APPLY_MOTION_CORRECTION = True
+APPLY_MOTION_CORRECTION = False # need to set to true
 CORRECTION_METHOD = "dredge"  # "decentralized" or "dredge"
 
 # --- Re-detect Peaks After Correction (using mua_pipeline) ---
@@ -84,14 +86,18 @@ MUA_SETTINGS = {
     "proto_n_jobs":       6,
     "load_computed_data": True,   # reload saved peaks if present
     "rolling_noise_dir":  ROLLING_NOISE_DIR,  # time-varying noise levels (optional)
+    "n_chunks":           1,
 }
 
 # Override detect_threshold from command-line if provided
 if args.mua_detect_threshold is not None:
     MUA_SETTINGS["detect_threshold"] = args.mua_detect_threshold
     print(f"Command-line override: mua_detect_threshold = {args.mua_detect_threshold}")
+if args.mua_n_chunks is not None:
+    MUA_SETTINGS["n_chunks"] = args.mua_n_chunks
+    print(f"Command-line override: mua_n_chunks = {args.mua_n_chunks}")
 
-FOLDER_NAME = f"thresholding_peaks"
+FOLDER_NAME = f"thresholding_peaks_{MUA_SETTINGS['detect_threshold']}"
 if ROLLING_NOISE_DIR is not None:
     FOLDER_NAME += "_rolling"
 if BASE_PATH is not None:

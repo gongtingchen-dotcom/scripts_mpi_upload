@@ -15,6 +15,7 @@ new recording.  Example usage in peak_localisation.ipynb:
 """
 
 # ── Imports ────────────────────────────────────────────────────────────────────
+import gc
 import json
 import os
 
@@ -571,6 +572,175 @@ def filter_peaks_by_spatial_support(
 
 # ── Main pipeline entry point ──────────────────────────────────────────────────
 
+def _run_pipeline_in_time_chunks(
+    rec,
+    fs,
+    n_chans,
+    noise_levels,
+    detect_threshold,
+    exclude_sweep_ms,
+    spatial_radius,
+    chunk_size_s,
+    n_jobs,
+    proto_n_jobs,
+    save_dir,
+    file_names,
+    n_chunks=1,
+):
+    """Run the full MUA peak-detection workflow in time chunks and concatenate results."""
+    n_chunks = max(1, int(n_chunks))
+    total_samples = rec.get_num_samples()
+    if n_chunks <= 1:
+        return None
+
+    chunk_size_samp = max(1, int(np.ceil(total_samples / n_chunks)))
+    print(f"Running full MUA pipeline in {n_chunks} time chunks of ~{chunk_size_samp} samples")
+
+    chunk_cache_dir = os.path.join(save_dir, "chunk_cache")
+    os.makedirs(chunk_cache_dir, exist_ok=True)
+    empty_peak_dtype = np.dtype([
+        ('sample_index', 'int64'),
+        ('channel_index', 'int64'),
+        ('amplitude', 'float32'),
+        ('segment_index', 'int64'),
+        ('z', 'int64'),
+    ])
+    chunk_output_paths = []
+
+    for chunk_idx in range(n_chunks):
+        start_frame = chunk_idx * chunk_size_samp
+        end_frame = min(start_frame + chunk_size_samp, total_samples)
+        if start_frame >= end_frame:
+            continue
+
+        print(f"  chunk {chunk_idx + 1}/{n_chunks}: frames {start_frame}-{end_frame}")
+        chunk_rec = rec.frame_slice(start_frame=start_frame, end_frame=end_frame)
+        chunk_rec = chunk_rec.astype('float32')
+
+        chunk_peaks0 = thresholding_chunked(
+            chunk_rec,
+            fs,
+            noise_levels,
+            detect_threshold=detect_threshold,
+            exclude_sweep_ms=exclude_sweep_ms,
+            chunk_size_s=chunk_size_s,
+            n_jobs=n_jobs,
+        )
+        chunk_peaks0 = chunk_peaks0.copy()
+
+        bio_windows, chunk_peaks1 = spatial_and_temporal_filter(
+            chunk_peaks0,
+            noise_levels,
+            fs,
+            n_chans=n_chans,
+            exclude_sweep_ms=exclude_sweep_ms,
+            spatial_radius=spatial_radius,
+        )
+        chunk_peaks2 = filter_peaks_by_spatial_support(
+            chunk_peaks1,
+            chunk_rec,
+            noise_levels,
+            sampling_frequency=fs,
+            detect_threshold=detect_threshold,
+            support_fraction=0.7,
+            n_required=1,
+            exclude_sweep_ms=exclude_sweep_ms,
+            chunk_size_s=chunk_size_s,
+        )
+
+        prototype, waveforms, few_peaks = get_prototype_and_waveforms_from_peaks(
+            chunk_rec,
+            chunk_peaks1,
+            ms_before=1,
+            ms_after=1,
+            job_kwargs=dict(n_jobs=proto_n_jobs, chunk_duration='1s', progress_bar=False),
+        )
+        method_kwargs = dict(
+            peak_sign='neg',
+            detect_threshold=detect_threshold - 0.2,
+            exclude_sweep_ms=0.1,
+            prototype=prototype,
+            ms_before=1,
+        )
+        job_kwargs_matched = dict(n_jobs=4, chunk_duration='1s', progress_bar=False)
+        chunk_peaks_matched = detect_peaks(
+            recording=chunk_rec,
+            method='matched_filtering',
+            method_kwargs=method_kwargs,
+            verbose=False,
+            job_kwargs=job_kwargs_matched,
+        )
+        if len(chunk_peaks_matched) > 0:
+            chunk_peaks_matched = chunk_peaks_matched.copy()
+            chunk_peaks_matched['sample_index'] = chunk_peaks_matched['sample_index'].astype(np.int64) + int(start_frame)
+
+        chunk_paths = {
+            'peaks0': os.path.join(chunk_cache_dir, f'peaks0_chunk_{chunk_idx:03d}.npy'),
+            'peaks1': os.path.join(chunk_cache_dir, f'peaks1_chunk_{chunk_idx:03d}.npy'),
+            'peaks2': os.path.join(chunk_cache_dir, f'peaks2_chunk_{chunk_idx:03d}.npy'),
+            'peaks_matched': os.path.join(chunk_cache_dir, f'peaks_matched_chunk_{chunk_idx:03d}.npy'),
+        }
+        np.save(chunk_paths['peaks0'], chunk_peaks0)
+        np.save(chunk_paths['peaks1'], chunk_peaks1)
+        np.save(chunk_paths['peaks2'], chunk_peaks2)
+        np.save(chunk_paths['peaks_matched'], chunk_peaks_matched)
+        chunk_output_paths.append(chunk_paths)
+
+        del chunk_rec, chunk_peaks0, chunk_peaks1, chunk_peaks2, chunk_peaks_matched, bio_windows, prototype, waveforms, few_peaks
+        gc.collect()
+
+    if not chunk_output_paths:
+        return None
+
+    def _load_and_concat_chunk_arrays(paths, empty_dtype):
+        combined = None
+        for path in paths:
+            if not os.path.isfile(path):
+                continue
+            chunk_arr = np.load(path)
+            if len(chunk_arr) == 0:
+                continue
+            combined = chunk_arr if combined is None else np.concatenate((combined, chunk_arr))
+        if combined is None:
+            return np.array([], dtype=empty_dtype)
+        return combined
+
+    peaks0 = _load_and_concat_chunk_arrays([paths['peaks0'] for paths in chunk_output_paths], empty_peak_dtype)
+    peaks1 = _load_and_concat_chunk_arrays([paths['peaks1'] for paths in chunk_output_paths], empty_peak_dtype)
+    peaks2 = _load_and_concat_chunk_arrays([paths['peaks2'] for paths in chunk_output_paths], empty_peak_dtype)
+    peaks_matched = _load_and_concat_chunk_arrays([paths['peaks_matched'] for paths in chunk_output_paths], empty_peak_dtype)
+
+    np.save(file_names['peaks0'], peaks0)
+    np.save(file_names['peaks1'], peaks1)
+    np.save(file_names['peaks2'], peaks2)
+    np.save(file_names['peaks_matched'], peaks_matched)
+    print(f"  Saved chunked outputs: {file_names['peaks0']}, {file_names['peaks1']}, {file_names['peaks2']}, {file_names['peaks_matched']}")
+
+    peaks_combined = np.concatenate([peaks1, peaks_matched])
+    _, peaks_combined1 = spatial_and_temporal_filter(
+        peaks_combined,
+        noise_levels,
+        fs,
+        n_chans=n_chans,
+        exclude_sweep_ms=exclude_sweep_ms,
+        spatial_radius=spatial_radius,
+    )
+    peaks_combined2 = filter_peaks_by_spatial_support(
+        peaks_combined1,
+        rec,
+        noise_levels,
+        sampling_frequency=fs,
+        detect_threshold=detect_threshold,
+        support_fraction=0.7,
+        n_required=1,
+        exclude_sweep_ms=exclude_sweep_ms,
+        chunk_size_s=chunk_size_s,
+    )
+    np.save(file_names['peaks_combined1'], peaks_combined1)
+    np.save(file_names['peaks_combined2'], peaks_combined2)
+    return peaks_combined2, peaks_combined1, peaks_matched, peaks0, peaks1, peaks2
+
+
 def run_mua_pipeline(
     bin_path,
     ops=None,                   # Kilosort ops dict (for extracting probe geom)
@@ -584,6 +754,7 @@ def run_mua_pipeline(
     load_computed_data=False,   # if True, load from disk if files exist; else compute
     folder_name="thresholding_peaks",  # subfolder to save peaks in
     rolling_noise_dir=None,     # path to rolling_snr/ dir; None → use si.get_noise_levels()
+    n_chunks=1,
 ):
     """
     Run the full MUA thresholding pipeline on a recording.
@@ -680,6 +851,7 @@ def run_mua_pipeline(
         "proto_n_jobs": int(proto_n_jobs),
         "load_computed_data": bool(load_computed_data),
         "folder_name": str(folder_name),
+        "n_chunks": int(n_chunks),
         "timestamp_created": datetime.now().isoformat(),
     }
     params_file = os.path.join(save_dir, "params.json")
@@ -697,7 +869,7 @@ def run_mua_pipeline(
         "peaks2":          os.path.join(save_dir, "peaks2.npy"),
     }
 
-    if load_computed_data:
+    if load_computed_data and int(n_chunks) <= 1:
         _missing = [k for k, p in _file_names.items() if not os.path.isfile(p)]
         if not _missing:
             print(f"Loading pre-computed peaks from {save_dir}")
@@ -711,7 +883,10 @@ def run_mua_pipeline(
         else:
             print(f"Data not found in {save_dir} (missing: {', '.join(_missing)}), computing data...")
     else:
-        print("Computing data...")
+        if int(n_chunks) > 1:
+            print(f"Chunked full-pipeline mode requested (n_chunks={n_chunks}); recomputing peaks...")
+        else:
+            print("Computing data...")
 
     # ── 2. Noise & config ───────────────────────────────────────────────────
     fs      = rec.sampling_frequency
@@ -734,7 +909,33 @@ def run_mua_pipeline(
         print("Computing static noise levels (si.get_noise_levels) ...")
         noise_levels = get_noise_levels(rec, return_in_uV=False)
 
-    # ── 3. Threshold detection (chunked) ────────────────────────────────────
+    # ── 3. Threshold detection and downstream peak processing ──────────────
+    if int(n_chunks) > 1:
+        chunked_result = _run_pipeline_in_time_chunks(
+            rec,
+            fs,
+            n_chans,
+            noise_levels,
+            detect_threshold,
+            exclude_sweep_ms,
+            spatial_radius,
+            chunk_size_s,
+            n_jobs,
+            proto_n_jobs,
+            save_dir,
+            _file_names,
+            n_chunks=n_chunks,
+        )
+        if chunked_result is not None:
+            peaks_combined2, peaks_combined1, peaks_matched, peaks0, peaks1, peaks2 = chunked_result
+            print(f"peaks0: {len(peaks0)}")
+            print(f"peaks1: {len(peaks1)}")
+            print(f"peaks2: {len(peaks2)}")
+            print(f"peaks_matched: {len(peaks_matched)}")
+            print(f"peaks_combined1: {len(peaks_combined1)}")
+            print(f"peaks_combined2: {len(peaks_combined2)}")
+            return rec, peaks_combined2, peaks_combined1, peaks_matched, peaks0, peaks1, peaks2
+
     print("thresholding (chunked)...")
     peaks0 = thresholding_chunked(
         rec, fs, noise_levels,

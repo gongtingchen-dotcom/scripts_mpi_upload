@@ -18,7 +18,7 @@ from tqdm.auto import tqdm, trange
 import argparse
 
 # %%
-si.set_global_job_kwargs(n_jobs=-1)
+si.set_global_job_kwargs(n_jobs=8)
 
 # %% load_rec
 def load_rec(rec_dir, start_sec=None, end_sec=None):

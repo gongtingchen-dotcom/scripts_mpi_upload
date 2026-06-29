@@ -17,6 +17,15 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from pathlib import Path
+from pandas.core.arrays.categorical import Categorical
+from pandas._libs.arrays import NDArrayBacked
+
+_orig_categorical_setstate = Categorical.__setstate__
+def _patched_categorical_setstate(self, state):
+    if not isinstance(state, dict):
+        dtype, codes = state; NDArrayBacked.__init__(self, codes, dtype)
+    else: _orig_categorical_setstate(self, state)
+Categorical.__setstate__ = _patched_categorical_setstate
 
 plt.rcParams.update({
     'figure.dpi': 120,
@@ -25,38 +34,64 @@ plt.rcParams.update({
     'font.size': 11,
 })
 
-# %% ── SETTINGS ───────────────────────────────────────────────────────────────
+# =============================================================================
+# ── USER CONFIGURATION ────────────────────────────────────────────────────────
+# =============================================================================
+
 behaviour_folder = "/ptmp/gongt/behaviour"
 animal = 'GLC6962'
 exp    = 'g_g0'
+
+# ✏️  The only thing you need to set.
+# Keys are behavioural variable names (must exist in texture_pca_df).
+# Values are dicts with optional fields:
+#   'rms_threshold' : float or None  — None = show distribution only, no filtering
+#   'align'         : 'peak' or 'onset'  — default: 'peak'
+#   'color'         : any matplotlib color  — default: auto from cycle
+# Any omitted field gets the default.
+PC_COLS = {
+    'PC4':  {'rms_threshold': 0.4, 'align': 'peak'},
+    'PC5':  {'rms_threshold': 1.4, 'align': 'peak'},
+    'PC6':  {'rms_threshold': 1.75, 'align': 'peak'},
+    'PC7':  {'rms_threshold': 0.9, 'align': 'peak'},
+    'PC8':  {'rms_threshold': 1.0, 'align': 'peak'},
+    'PC9':  {'rms_threshold': 1.25, 'align': 'peak'},
+    'PC10': {'rms_threshold': 0.8, 'align': 'peak'},
+}
+# Example with everything set:
+# PC_COLS = {
+#     'PC1':           {'rms_threshold': 0.5, 'align': 'peak',  'color': 'royalblue'},
+#     'PC2':           {'rms_threshold': 1.5, 'align': 'peak',  'color': 'darkorange'},
+#     'texture_speed': {'rms_threshold': 1.2, 'align': 'onset', 'color': 'mediumpurple'},
+# }
+
+# ── Defaults (no need to change) ─────────────────────────────────────────────
+_DEFAULT_RMS_THRESHOLD = None
+_DEFAULT_ALIGN_MODE    = 'peak'
+_COLOUR_CYCLE = [
+    'steelblue', 'tomato', 'seagreen', 'goldenrod', 'orchid',
+    'saddlebrown', 'teal', 'slategray', 'coral', 'darkviolet',
+]
 
 MIN_DUR    = 5
 MAX_DUR    = 30
 WINDOW_SEC = MIN_DUR
 
-PC_COLS   = ['PC1', 'PC2', 'PC3', 'texture_speed']
-PC_COLORS = {'PC1': 'royalblue', 'PC2': 'darkorange', 'PC3': 'mediumseagreen',
-             'texture_speed': 'mediumpurple'}
-
-# ✏️  RMS threshold in PC units — per trial, RMS deviation from the group mean.
-# On first run leave as None to see the score distribution, then set values.
-RMS_THRESHOLDS = {
-    'PC1':           0.5,
-    'PC2':           1.5,
-    'PC3':           0.8,
-    'texture_speed': 1.2,
-}
-
-# ✏️  Set per-PC alignment after inspecting quick-look plots
-ALIGN_MODES = {
-    'PC1':           'peak',
-    'PC2':           'peak',
-    'PC3':           'peak',
-    'texture_speed': 'peak',   # texture_speed has no clear peak — onset preferred
-}
-
-PLOT_DIR = Path("/ptmp/gongt/behaviour/GLC6962/GLC6962_g_g0/trial_filter")
+PLOT_DIR = Path(f"{behaviour_folder}/{animal}/{animal}_{exp}/trial_filter")
 PLOT_DIR.mkdir(parents=True, exist_ok=True)
+
+# =============================================================================
+# ── END CONFIGURATION ─────────────────────────────────────────────────────────
+# =============================================================================
+
+def _get_color(pc, idx):
+    return PC_COLS[pc].get('color', _COLOUR_CYCLE[idx % len(_COLOUR_CYCLE)])
+
+def _get_rms_threshold(pc):
+    return PC_COLS[pc].get('rms_threshold', _DEFAULT_RMS_THRESHOLD)
+
+def _get_align_mode(pc):
+    return PC_COLS[pc].get('align', _DEFAULT_ALIGN_MODE)
 
 # %% ── HELPERS ────────────────────────────────────────────────────────────────
 def savefig(fig, name):
@@ -70,13 +105,8 @@ def make_tag(pc, align, thr):
     return f"{animal}_{exp}_{pc}_{align}_dur{MIN_DUR}s_{thr_str}"
 
 def rms_from_mean(traces):
-    """
-    Per-trial RMS deviation from the group mean trace.
-    traces : (n_trials, n_samples)
-    returns: (n_trials,) array of RMS values, in the same units as the PC.
-    """
-    mean_trace = np.nanmean(traces, axis=0)          # (n_samples,)
-    residuals  = traces - mean_trace[np.newaxis, :]  # (n_trials, n_samples)
+    mean_trace = np.nanmean(traces, axis=0)
+    residuals  = traces - mean_trace[np.newaxis, :]
     return np.sqrt(np.nanmean(residuals ** 2, axis=1))
 
 # %% ── LOAD DATA ──────────────────────────────────────────────────────────────
@@ -88,20 +118,17 @@ beh = texture_pca_df[
     (texture_pca_df['animal'] == animal) &
     (texture_pca_df['background'] == 'eink')
 ].copy()
-beh_t   = beh['time'].dt.total_seconds().values
+beh_t = beh['time'].dt.total_seconds().values
 
-# guard: drop any col not present in the dataframe
-_missing_cols = [c for c in PC_COLS if c not in beh.columns]
-if _missing_cols:
-    print(f"[WARN] Columns not found in beh dataframe: {_missing_cols}")
+# Guard: drop any col not present in the dataframe
+_missing = [c for c in PC_COLS if c not in beh.columns]
+if _missing:
+    print(f"[WARN] Columns not found in beh dataframe: {_missing}")
     print(f"  Available: {[c for c in beh.columns if any(k in c for k in ['PC','texture','speed'])]}")
-    PC_COLS        = [c for c in PC_COLS if c in beh.columns]
-    PC_COLORS      = {k: v for k, v in PC_COLORS.items()      if k in PC_COLS}
-    RMS_THRESHOLDS = {k: v for k, v in RMS_THRESHOLDS.items() if k in PC_COLS}
-    ALIGN_MODES    = {k: v for k, v in ALIGN_MODES.items()    if k in PC_COLS}
-    print(f"  Continuing with: {PC_COLS}")
+    PC_COLS = {k: v for k, v in PC_COLS.items() if k in beh.columns}
+    print(f"  Continuing with: {list(PC_COLS)}")
 
-beh_arr = beh[PC_COLS].values.astype(float)
+beh_arr = beh[list(PC_COLS)].values.astype(float)
 
 dt        = float(np.median(np.diff(beh_t)))
 FS        = 1.0 / dt
@@ -111,6 +138,7 @@ t_axis    = np.arange(N_SAMPLES) / FS
 print(f"Behaviour frames : {len(beh):,}")
 print(f"Inferred FS      : {FS:.2f} Hz  →  {N_SAMPLES} samples per {WINDOW_SEC} s window")
 print(f"Trajectories     : {len(trajectory_times_sec)} trials")
+print(f"Variables        : {list(PC_COLS)}")
 
 onsets    = trajectory_times_sec['onset_sec'].values
 offsets   = trajectory_times_sec['offset_sec'].values
@@ -155,11 +183,11 @@ plt.tight_layout()
 savefig(fig, f"{animal}_{exp}_dur{MIN_DUR}-{MAX_DUR}s_filter_overlay.png")
 
 # %% ── PER-PC LOOP ────────────────────────────────────────────────────────────
-for pc_col in PC_COLS:
-    pi         = PC_COLS.index(pc_col)
-    clr        = PC_COLORS[pc_col]
-    thr        = RMS_THRESHOLDS[pc_col]
-    align_mode = ALIGN_MODES[pc_col]
+for pc_idx, pc_col in enumerate(PC_COLS):
+    pi         = pc_idx
+    clr        = _get_color(pc_col, pc_idx)
+    thr        = _get_rms_threshold(pc_col)
+    align_mode = _get_align_mode(pc_col)
     tag        = make_tag(pc_col, align_mode, thr)
     half       = WINDOW_SEC / 2.0
 
@@ -169,7 +197,7 @@ for pc_col in PC_COLS:
     }
 
     print(f"\n{'='*60}")
-    print(f"  {pc_col}  |  align={align_mode}  |  RMS threshold={thr}")
+    print(f"  {pc_col}  |  align={align_mode}  |  RMS threshold={thr}  |  colour={clr}")
     print(f"{'='*60}")
 
     # ── extract windows ───────────────────────────────────────────────────────
@@ -224,9 +252,6 @@ for pc_col in PC_COLS:
         ax.set_xlabel(x_labels[mode]);  ax.set_ylabel(pc_col)
         ax.legend(loc='upper right', fontsize=9);  ax.grid(alpha=0.15)
         plt.tight_layout()
-        # savefig(fig,
-        #         f"{animal}_{exp}_{pc_col}_{mode}_dur{MIN_DUR}-{MAX_DUR}s"
-        #         f"_win{WINDOW_SEC}s_quicklook.png")
 
     # ── choose alignment ──────────────────────────────────────────────────────
     if align_mode == 'onset':
@@ -240,10 +265,10 @@ for pc_col in PC_COLS:
         win_starts_v = peak_win_starts[valid_peak]
         win_ends_v   = peak_win_ends[valid_peak]
 
-    # ── per-trial demean (remove DC offset so we compare shapes not levels) ────
+    # ── per-trial demean ───────────────────────────────────────────────────────
     traces_demeaned = traces_v - np.nanmean(traces_v, axis=1, keepdims=True)
 
-    # ── RMS deviation from group mean of demeaned traces ─────────────────────
+    # ── RMS deviation from group mean ─────────────────────────────────────────
     trial_scores = rms_from_mean(traces_demeaned)
     mean_trace   = np.nanmean(traces_demeaned, axis=0)
 
@@ -269,8 +294,7 @@ for pc_col in PC_COLS:
         ax.fill_between(t_axis, mean_trace - thr, mean_trace + thr,
                         color='black', alpha=0.10, label=f'±RMS thr ({thr})')
     sm = plt.cm.ScalarMappable(cmap=cmap_rms,
-                               norm=plt.Normalize(trial_scores.min(),
-                                                  trial_scores.max()))
+                               norm=plt.Normalize(trial_scores.min(), trial_scores.max()))
     sm.set_array([])
     plt.colorbar(sm, ax=ax, label=f'RMS deviation (demeaned {pc_col} units)')
     ax.set_xlabel(x_labels[align_mode]);  ax.set_ylabel(f'{pc_col} (demeaned)')
@@ -289,8 +313,7 @@ for pc_col in PC_COLS:
                  ha='center', fontsize=8, color='darkorange')
     ax2.set_xlabel(f'RMS deviation from group mean  ({pc_col} units)')
     ax2.set_ylabel('Count')
-    ax2.set_title(f'{pc_col} per-trial RMS score\n'
-                  f'(lower = closer to group mean)')
+    ax2.set_title(f'{pc_col} per-trial RMS score\n(lower = closer to group mean)')
     plt.tight_layout()
     savefig(fig, f"{tag}_rms_score_distribution.png")
 
@@ -314,10 +337,9 @@ for pc_col in PC_COLS:
     win_ends_sel   = win_ends_v[keep_mask]
     scores_sel     = trial_scores[keep_mask]
 
-    print(f"  Threshold = {thr}  →  "
-          f"{keep_mask.sum()} selected / {len(traces_v)} total")
+    print(f"  Threshold = {thr}  →  {keep_mask.sum()} selected / {len(traces_v)} total")
 
-    # ── before vs after: show demeaned traces ─────────────────────────────────
+    # ── before vs after ───────────────────────────────────────────────────────
     traces_demeaned_sel = traces_demeaned[keep_mask]
 
     fig, axes = plt.subplots(1, 2, figsize=(14, 4), sharex=True, sharey=True)
@@ -327,11 +349,10 @@ for pc_col in PC_COLS:
         f'RMS threshold ≤ {thr}  (demeaned)',
         fontsize=11,
     )
-    panels = [
+    for col_idx, (tr_set, title) in enumerate([
         (traces_demeaned,     f'Before  (n={len(traces_v)})'),
         (traces_demeaned_sel, f'After  (n={keep_mask.sum()})'),
-    ]
-    for col_idx, (tr_set, title) in enumerate(panels):
+    ]):
         ax = axes[col_idx]
         m  = np.nanmean(tr_set, axis=0)
         for ti in range(len(tr_set)):
@@ -340,8 +361,7 @@ for pc_col in PC_COLS:
         ax.fill_between(t_axis, m - s, m + s, color=clr, alpha=0.20)
         ax.plot(t_axis, m, color='black', lw=2.0, label='mean ± 1SD')
         ax.fill_between(t_axis, m - thr, m + thr,
-                        color='black', alpha=0.08,
-                        label=f'±RMS thr ({thr})')
+                        color='black', alpha=0.08, label=f'±RMS thr ({thr})')
         ax.plot(t_axis, m + thr, color='black', lw=0.8, ls='--')
         ax.plot(t_axis, m - thr, color='black', lw=0.8, ls='--')
         ax.set_title(title, fontsize=10)
@@ -352,7 +372,7 @@ for pc_col in PC_COLS:
     plt.tight_layout()
     savefig(fig, f"{tag}_before_vs_after_filter.png")
 
-    # ── trial average ± SD (selected, raw values) ─────────────────────────────
+    # ── trial average ± SD ────────────────────────────────────────────────────
     fig, ax = plt.subplots(figsize=(10, 4))
     fig.suptitle(
         f'{animal} {exp} — {pc_col},  {align_mode}-aligned,  '
@@ -376,19 +396,19 @@ for pc_col in PC_COLS:
 
     # ── export CSV ────────────────────────────────────────────────────────────
     out_df = pd.DataFrame({
-        'trial_original_idx':           sel_idx_sel,
-        'original_onset_sec':           onsets[sel_idx_sel],
-        'original_offset_sec':          offsets[sel_idx_sel],
-        'original_duration_sec':        durations[sel_idx_sel],
-        'peak_sec':                     peaks[sel_idx_sel],
-        'win_start_sec':                win_starts_sel,
-        'win_end_sec':                  win_ends_sel,
-        'win_duration_sec':             win_ends_sel - win_starts_sel,
-        'peak_offset_from_win_start_sec': peaks[sel_idx_sel] - win_starts_sel,
-        'rms_score':                    scores_sel,
-        'pc':                           pc_col,
-        'align_mode':                   align_mode,
-        'rms_threshold':                thr,
+        'trial_original_idx':               sel_idx_sel,
+        'original_onset_sec':               onsets[sel_idx_sel],
+        'original_offset_sec':              offsets[sel_idx_sel],
+        'original_duration_sec':            durations[sel_idx_sel],
+        'peak_sec':                         peaks[sel_idx_sel],
+        'win_start_sec':                    win_starts_sel,
+        'win_end_sec':                      win_ends_sel,
+        'win_duration_sec':                 win_ends_sel - win_starts_sel,
+        'peak_offset_from_win_start_sec':   peaks[sel_idx_sel] - win_starts_sel,
+        'rms_score':                        scores_sel,
+        'pc':                               pc_col,
+        'align_mode':                       align_mode,
+        'rms_threshold':                    thr,
     })
 
     out_path = (f"{behaviour_folder}/{animal}/{animal}_{exp}/"
