@@ -39,4 +39,4 @@ export PYTHONPATH="/u/gongt/scripts:$PYTHONPATH"
 # Python path should be passed as environment variable when submitting job
 PYTHON=${PYTHON_PATH:-$(which python)}
 
-python /u/gongt/scripts/peak_detect_localise/peak_localisation.py --mua_detect_threshold 3.5 --base_path /nexus/posix0/MBR-neuralsystems/ephys/GLC7248/GLC7248_a_g1/preprocessed --mua_n_chunks 2
+python /u/gongt/scripts/peak_detect_localise/peak_localisation.py --mua_detect_threshold 3.3 --base_path /nexus/posix0/MBR-neuralsystems/ephys/GLC7248/GLC7248_a_g1/preprocessed --mua_n_chunks 2
