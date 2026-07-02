@@ -99,6 +99,12 @@ _ap.add_argument('--zscore_spike_features', action=_argparse.BooleanOptionalActi
 _ap.add_argument('--embargo_trials',  type=int,   default=0,
                  help='Trials dropped on EACH side of EVERY train<->test boundary '
                       '(both directions: train->test and test->train). 0 = off.')
+_ap.add_argument('--context_before_bins', type=int, default=3,
+                 help='Number of past time bins to include in the decoder context window '
+                      '(default 3; set 0 for instantaneous decoding).')
+_ap.add_argument('--context_after_bins', type=int, default=3,
+                 help='Number of future time bins to include in the decoder context window '
+                      '(default 3; set 0 for past-only decoding).')
 _ap.add_argument('--animal_speed_gate', type=float, default=0.0)
 _ap.add_argument('--selected_trials', default=None,
                  help='Path to a similar_trials CSV from trial_structure.py. '
@@ -1194,6 +1200,8 @@ if SHUFFLE == 'none':
     _, obs_beh, pred_beh, metrics_beh = sliding_window_decoder(
         weight_matrix, _bin_beh_for_decode, eval_train_idx, eval_test_idx,
         behavior_type="continuous", verbose=False,
+        context_before=_args.context_before_bins,
+        context_after=_args.context_after_bins,
     )
     print(f"\n{'='*52}")
     print(f"  {BEHAVIOR_VAR}  R² = {metrics_beh['r2']:+.4f}   r = {metrics_beh['corr']:.4f}")

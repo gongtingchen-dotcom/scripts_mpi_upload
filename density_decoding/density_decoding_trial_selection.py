@@ -88,6 +88,12 @@ _ap.add_argument('--animal_speed_gate', type=float, default=0.0,
                       'threshold (units match the "speed" column in texture_pca_df, '
                       'typically px/frame or normalised). '
                       'Keeps only stationary periods. 0 = off (default).')
+_ap.add_argument('--context_before_bins', type=int, default=3,
+                 help='Number of past time bins to include in the decoder context window '
+                      '(default 3; set 0 for instantaneous decoding).')
+_ap.add_argument('--context_after_bins', type=int, default=3,
+                 help='Number of future time bins to include in the decoder context window '
+                      '(default 3; set 0 for past-only decoding).')
 # ── SELECTED TRIALS (from trial_structure.py) ─────────────────────────────────
 _ap.add_argument('--selected_trials', default=None,
                  help='Path to a similar_trials CSV produced by trial_structure.py. '
@@ -1555,6 +1561,8 @@ print(f"\n[DECODE] Running decoder on held-out test windows ...")
 _, obs_beh, pred_beh, metrics_beh = sliding_window_decoder(
     weight_matrix, _bin_beh_for_decode, train_idx, test_idx,
     behavior_type="continuous", verbose=False,
+    context_before=_args.context_before_bins,
+    context_after=_args.context_after_bins,
 )
 print(f"\n{'='*52}")
 print(f"  {BEHAVIOR_VAR}  R² = {metrics_beh['r2']:+.4f}   r = {metrics_beh['corr']:.4f}")

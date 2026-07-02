@@ -33,9 +33,9 @@ plt.rcParams.update({
 # ── ARGS ──────────────────────────────────────────────────────────────────────
 ap = argparse.ArgumentParser()
 ap.add_argument('--shuffle_dir',
-    default='/nexus/posix0/MBR-neuralsystems/ephys/GLC6962/GLC6962_g_g0/density_decoding/pc8_100ms_5s_interleaved_zscoreboth_embargo0_selected-similar_trials_PC8_peak_dur5s_chunksize10_neural_shuffle_all')
+    default='/nexus/posix0/MBR-neuralsystems/ephys/GLC6962/GLC6962_g_g0/density_decoding/pc1_100ms_5s_interleaved_zscoreboth_embargo0_selected-similar_trials_PC1_peak_rms0.5_chunksize10_neural_shuffle_all')
 ap.add_argument('--real_results_dir', 
-    default='/nexus/posix0/MBR-neuralsystems/ephys/GLC6962/GLC6962_g_g0/density_decoding/pc8_100ms_5s_interleaved_zscoreboth_embargo0_selected-similar_trials_PC8_peak_dur5s_chunksize10',
+    default='/nexus/posix0/MBR-neuralsystems/ephys/GLC6962/GLC6962_g_g0/density_decoding/pc1_100ms_5s_interleaved_zscoreboth_embargo0_selected_chunksize10',
     help='Path to the real (non-shuffled) run results directory. '
          'If omitted, inferred by stripping the _neural_shuffle / '
          '_neural_scramble / _behavior_scramble suffix from shuffle_dir. '
@@ -698,388 +698,308 @@ _p_tr = SHUFFLE_DIR / f'{ANALYSIS_MODE}_decode_traces_{BEH_VAR}.png'
 print(f"Saved → {_p_tr}")
 
 # ══════════════════════════════════════════════════════════════════════════════
-# ── 3. NEURAL COMPARISON ──────────────────────────────────────────────────────
-#
-# For each of (real run, best-r shuffle, worst-r shuffle):
-#
-# Section A — SPIKE SCATTER  (one sub-panel per test trial)
-#   x = time within trial window, y = z_corr (probe depth), dot per spike
-#   real run spikes in grey; shifted spikes in colour
-#   overlaid: GMM component centroids sized by weight_matrix value for that bin
-#
-# Section B — WEIGHT-MATRIX TIME PROFILES  (per test trial)
-#   imshow: x = time bin, y = GMM component (sorted by depth)
-#   show for each selected test trial (real & each shuffle side by side)
-#
-# Section C — TRAINING TEMPLATE
-#   mean weight_matrix over all train trials → (n_comp, n_t)
-#   "what the decoder learned to expect per time bin"
-#
+# ── 4. R / R² vs TIME SHIFT (averaged, two stacked panels) ───────────────────
 # ══════════════════════════════════════════════════════════════════════════════
+if ANALYSIS_MODE == 'shuffle':
+    _shift_grp = df.groupby('shift_sec').agg(
+        r2_mean=('r2', 'mean'), r2_std=('r2', 'std'), r2_n=('r2', 'size'),
+        r_mean=('r', 'mean'),  r_std=('r', 'std'),
+    ).reset_index().sort_values('shift_sec')
+    _shift_grp['r2_std'] = _shift_grp['r2_std'].fillna(0.0)
+    _shift_grp['r_std']  = _shift_grp['r_std'].fillna(0.0)
 
-# ── helpers for sorting components by depth ───────────────────────────────────
-def _comp_sort_order(n_comp):
-    if gmm_obj is not None and hasattr(gmm_obj, 'means_') and gmm_obj.means_.shape[1] >= 2:
-        return np.argsort(gmm_obj.means_[:, 1])   # ascending z
-    return np.arange(n_comp)
+    _x = _shift_grp['shift_sec'].values
+    _xpad = (_x.max() - _x.min()) * 0.03 if len(_x) > 1 else 1.0
 
-def _comp_depth_labels(sort_order):
-    if gmm_obj is not None and hasattr(gmm_obj, 'means_') and gmm_obj.means_.shape[1] >= 2:
-        return gmm_obj.means_[sort_order, 1]
-    return sort_order.astype(float)
+    fig4, axes4 = plt.subplots(2, 1, figsize=(9, 8), sharex=True)
+    fig4.suptitle(f"Mean R² / r vs time shift — {BEH_VAR}  ({ANALYSIS_MODE})\n"
+                  f"error bars = ±1 std across repeats at each shift",
+                  fontsize=11)
 
-# ── load weight matrix from an npz ───────────────────────────────────────────
-def _load_wm(npz_path_or_dict):
-    d = np.load(npz_path_or_dict) if isinstance(npz_path_or_dict, str) else npz_path_or_dict
-    if 'weight_matrix' not in d.files: return None, None, None
-    wm       = d['weight_matrix']     # (n_valid, n_comp, n_t)
-    train_i  = d['train_idx']
-    test_i   = d['test_idx']
-    return wm, train_i, test_i
-
-# ── build FIGURE ──────────────────────────────────────────────────────────────
-# Cases: real run + selected shuffles/scrambles
-# Each case: (label, colour, decode_npz_or_dict, shift_sec_or_none, perm_or_none)
-_cases = []
-if real_d is not None:
-    _real_detail = ''
-    if args.real_r2 is not None and args.real_r is not None:
-        _real_detail = f'\nshift=0s  R²={args.real_r2:+.3f}  r={args.real_r:+.3f}'
-    _cases.append((f'Real run{_real_detail}', 'dimgray', real_d, 0.0, None))
-for lbl, clr, di in SELECTED_SHUFFLES:
-    ro = df.loc[di]
-    if ANALYSIS_MODE == 'shuffle':
-        _detail = f'shift={ro.shift_sec:.0f}s  R²={ro.r2:+.3f}  r={ro.r:+.3f}'
-        _perm   = None
-    else:
-        _detail = f'mode={ro.scramble_mode}  R²={ro.r2:+.3f}  r={ro.r:+.3f}'
-        _perm   = np.array(ro['scramble_perm'], dtype=int) if ro['scramble_perm'] else None
-    _cases.append((
-        f'{lbl}  ({_run_noun[:-1]} {int(ro.shuffle_index)})\n{_detail}',
-        clr, ro['decode_npz'], float(ro['shift_sec']), _perm))
-
-n_cases = len(_cases)
-
-def _load_beta(folder_or_dir, var_key, session):
-    """Load beta = U @ V from ckpt_*_post_params.npz in a directory."""
-    p = Path(folder_or_dir)
-    candidates = list(p.glob(f'ckpt_{var_key}_{session}_post_params.npz'))
-    if not candidates:
-        candidates = list(p.glob('ckpt_*_post_params.npz'))
-    if not candidates:
-        return None
-    try:
-        pp = np.load(candidates[0])
-        beta = pp['U'] @ pp['V']   # (n_comp, n_t)
-        return beta
-    except Exception as e:
-        print(f"  [WARN] beta load from {candidates[0]}: {e}")
-        return None
-
-def _infer_session(real_dir):
-    """Infer SESSION string (e.g. GLC6962_g_g0) from real_dir path."""
-    if real_dir is None: return ''
-    for f in Path(real_dir).glob('ckpt_*_gmm.pkl'):
-        # ckpt_{var_key}_{SESSION}_gmm.pkl
-        stem = f.stem  # e.g. ckpt_pc1_GLC6962_g_g0_gmm
-        if stem.endswith('_gmm'):
-            inner = stem[len('ckpt_'):-len('_gmm')]  # pc1_GLC6962_g_g0
-            parts = inner.split('_')
-            for i, part in enumerate(parts):
-                if part and part[0].isupper():
-                    return '_'.join(parts[i:])
-    return ''
-
-_SESSION_str = _infer_session(REAL_DIR)
-
-if n_cases == 0:
-    print("[WARN] No cases to compare — skipping neural comparison plot")
+    for ax, col_mean, col_std, label, real_val in [
+        (axes4[0], 'r2_mean', 'r2_std', 'R²',        args.real_r2),
+        (axes4[1], 'r_mean',  'r_std',  'Pearson r', args.real_r),
+    ]:
+        ax.errorbar(_x, _shift_grp[col_mean], yerr=_shift_grp[col_std],
+                    fmt='o', color='steelblue', ecolor='steelblue',
+                    markersize=9, markeredgecolor='white', markeredgewidth=0.8,
+                    elinewidth=1.2, capsize=3, alpha=0.9)
+        ax.axhline(0, color='black', lw=0.8, ls=':', alpha=0.5)
+        if real_val is not None:
+            ax.axhline(real_val, color='crimson', lw=2, ls='--',
+                       label=f'Real={real_val:+.4f}')
+            ax.legend(fontsize=8, loc='upper right')
+        ax.set_ylabel(label)
+        ax.set_title(f'Mean {label} by shift', fontsize=9)
+        ax.set_xlim(_x.min() - _xpad, _x.max() + _xpad)
+        ax.grid(True, alpha=0.15)
+    axes4[1].set_xlabel('Shift (s)')
+    plt.tight_layout()
+    _p4 = SHUFFLE_DIR / f'{ANALYSIS_MODE}_r_r2_vs_shift_{BEH_VAR}.png'
+    plt.savefig(_p4, dpi=130, bbox_inches='tight'); plt.close()
+    print(f"Saved → {_p4}")
 else:
-    # ── load all weight matrices and betas ─────────────────────────────────────
-    all_case_data = []
-    for lbl, clr, npz_or_dict, shift_sec, perm in _cases:
-        wm, tr_i, te_i = _load_wm(npz_or_dict)
-        # also try to load perm from npz (more reliable than from JSON list)
-        if perm is None and ANALYSIS_MODE == 'scramble':
-            try:
-                _d_tmp = np.load(npz_or_dict) if isinstance(npz_or_dict, str) else npz_or_dict
-                if 'scramble_perm' in _d_tmp.files:
-                    perm = np.array(list(_d_tmp['scramble_perm']), dtype=int)
-            except Exception:
-                pass
-        if shift_sec == 0.0 and REAL_DIR:
-            beta = _load_beta(REAL_DIR, _var_key, _SESSION_str)
-        else:
-            _shuf_folder = Path(npz_or_dict).parent if isinstance(npz_or_dict, str) else None
-            beta = _load_beta(_shuf_folder, _var_key, _SESSION_str) if _shuf_folder else None
-        all_case_data.append({'lbl': lbl, 'clr': clr, 'wm': wm,
-                               'train_i': tr_i, 'test_i': te_i,
-                               'shift_sec': shift_sec, 'perm': perm, 'beta': beta})
+    print(f"[SKIP] R/R² vs shift plot — not applicable in {ANALYSIS_MODE} mode "
+          f"(no shift_sec axis)")
 
-    # ── figure layout ──────────────────────────────────────────────────────────
-    # Columns: one per case + 1 decode-trace column
-    # Rows:
-    #   [A] _n_show_t spike-scatter rows
-    #   [B] _n_show_t weight-heatmap rows
-    #   [C] 1 training-template row
-    #   [D] 1 beta row
+# ══════════════════════════════════════════════════════════════════════════════
+# ── 5. PER-TRIAL NULL DISTRIBUTION + DECODE TRACES (one row per test trial) ──
+# ══════════════════════════════════════════════════════════════════════════════
+def _per_trial_stats(obs, pred):
+    """Return (r2_per_trial, r_per_trial) arrays, one value per trial row."""
+    n = obs.shape[0]
+    r2s = np.full(n, np.nan); rs = np.full(n, np.nan)
+    for i in range(n):
+        o, p = obs[i], pred[i]
+        ss_tot = np.sum((o - o.mean())**2)
+        ss_res = np.sum((o - p)**2)
+        r2s[i] = 1 - ss_res / ss_tot if ss_tot > 1e-12 else np.nan
+        if np.std(o) > 1e-12 and np.std(p) > 1e-12:
+            rs[i] = pearsonr(o, p)[0]
+    return r2s, rs
 
-    _n_cols       = n_cases + 1    # +1 for decode trace column
-    _n_rows_A     = _n_show_t
-    _n_rows_B     = _n_show_t
-    _row_heights  = ([1.8]*_n_rows_A + [1.5]*_n_rows_B + [1.8] + [2.0])
-    _n_rows_total = len(_row_heights)
-    _fig_h = sum(_row_heights) + 0.5 * _n_rows_total
-    _fig_w = _n_cols * 4.5
+_real_r2_trial, _real_r_trial = (None, None)
+if real_tr is not None:
+    _obs_real, _pred_real, _t_ax_real, _test_idx_real = real_tr
+    _real_r2_trial, _real_r_trial = _per_trial_stats(_obs_real, _pred_real)
+    _n_trials_common = len(_real_r2_trial)
+else:
+    _n_trials_common = None
 
-    fig_nc = plt.figure(figsize=(_fig_w, _fig_h))
-    gs = gridspec.GridSpec(
-        _n_rows_total, _n_cols,
-        figure=fig_nc,
-        height_ratios=_row_heights,
-        hspace=0.55, wspace=0.35,
-        top=0.96, bottom=0.03, left=0.06, right=0.97,
-    )
-    fig_nc.suptitle(
-        f"Neural comparison — {BEH_VAR}  "
-        f"({_n_show_t} test trials, R2-selected shuffles, depth-sorted GMM)"
-        f"Section A: spike scatter  |  Section B: weight-matrix per test trial  "
-        f"|  Section C: training template  |  Section D: beta (U@V)  "
-        f"|  Col {n_cases+1}: decode traces",
-        fontsize=8,
-    )
+_null_r2_rows, _null_r_rows, _null_pred_rows = [], [], []
+_null_shift_used, _null_scramble_used = [], []
+for _, _row in df.iterrows():
+    _tr_i = _parse_obs_pred(_row['decode_npz'], _row)
+    if _tr_i is None:
+        continue
+    _o_i, _p_i, _, _ = _tr_i
+    _r2_i, _r_i = _per_trial_stats(_o_i, _p_i)
+    _null_r2_rows.append(_r2_i); _null_r_rows.append(_r_i)
+    _null_pred_rows.append(_p_i)
+    _null_shift_used.append(float(_row['shift_sec']))
+    _null_scramble_used.append(str(_row.get('scramble_mode', '')))
 
-    # ── also need obs/pred for decode trace column ─────────────────────────────
-    _case_traces = []
-    for cd in all_case_data:
-        npz_src = cd['wm']   # wm already loaded; need raw npz for obs/pred
-        # re-load obs/pred from the npz
-        _npz_path = _cases[all_case_data.index(cd)][2]
-        _tr = _parse_obs_pred(_npz_path, {'T_TRIAL': T_TRIAL_ref or 5.0,
-                                           'N_T_BINS': N_T_BINS_ref or 50})
-        _case_traces.append(_tr)
+if not _null_r2_rows or _n_trials_common is None or real_tr is None:
+    print("[SKIP] Per-trial null plot — insufficient data (real run or shuffles missing obs/pred)")
+else:
+    _min_n = min(_n_trials_common, min(len(r) for r in _null_r2_rows))
+    _null_r2_mat = np.stack([r[:_min_n] for r in _null_r2_rows])   # (n_shuffles, n_trials)
+    _null_r_mat  = np.stack([r[:_min_n] for r in _null_r_rows])
+    _null_shift_arr    = np.array(_null_shift_used)     # (n_shuffles,) aligned with mat rows
+    _null_scramble_arr = np.array(_null_scramble_used)
+    _real_r2_trial = _real_r2_trial[:_min_n]
+    _real_r_trial  = _real_r_trial[:_min_n]
 
-    for ci, cd in enumerate(all_case_data):
-        wm      = cd['wm']
-        train_i = cd['train_i']
-        test_i  = cd['test_i']
-        lbl     = cd['lbl']
-        clr     = cd['clr']
-        beta    = cd['beta']
-        shift_s = cd['shift_sec']
-        perm_s  = cd['perm']   # permutation array for scramble, None for shuffle
+    # trim time axis to the shortest common length across real + all shuffle preds
+    _min_t = min([_pred_real.shape[1]] + [p.shape[1] for p in _null_pred_rows])
+    _obs_real_trim   = _obs_real[:_min_n, :_min_t]
+    _pred_real_trim  = _pred_real[:_min_n, :_min_t]
+    _t_ax_trim       = _t_ax_real[:_min_t]
+    _null_pred_trim  = [p[:_min_n, :_min_t] for p in _null_pred_rows]
 
-        if wm is None:
-            continue
+    fig5, axes5 = plt.subplots(_min_n, 3, figsize=(16, max(6, _min_n * 2.4)),
+                               squeeze=False)
+    fig5.suptitle(f"Per-trial null distribution + decode traces — {BEH_VAR}  ({ANALYSIS_MODE})\n"
+                  f"{len(_null_r2_rows)} {_run_noun}  |  crimson = real run  |  "
+                  f"orange dashed = P5/P50/P95  |  p = fraction of null ≥ real",
+                  fontsize=11)
 
-        n_comp = wm.shape[1]
-        n_t    = wm.shape[2]
-        sort_c = _comp_sort_order(n_comp)
-        z_sorted = _comp_depth_labels(sort_c)
-        _t_ax_sec = np.arange(n_t) * ((T_TRIAL_ref or 5.0) / (N_T_BINS_ref or n_t))
+    def _run_label(i):
+        if ANALYSIS_MODE == 'shuffle':
+            return f"shift={_null_shift_used[i]:.0f}s"
+        return f"{_null_scramble_used[i]}" or f"run {i}"
 
-        # spike times to show: for shuffle = circularly shifted;
-        # for scramble = original (bins were permuted, not spike times)
-        if ANALYSIS_MODE == 'shuffle' and shift_s > 0 and _spike_t_all is not None:
-            spike_t_case = _circ_shift_spikes(
-                _spike_t_all, shift_s, T_OV_START_ref, T_OV_END_ref)
-        else:
-            spike_t_case = _spike_t_all
-
-        # ── Section A: spike scatter ───────────────────────────────────────────
-        for ti, test_pos in enumerate(_show_test_pos):
-            ax = fig_nc.add_subplot(gs[ti, ci])
-
-            if trial_starts_all is not None and test_i is not None:
-                _vp  = test_i[test_pos]
-                t0   = float(trial_starts_all[_vp])
-                t1   = float(trial_ends_all[_vp])
-                dur  = t1 - t0
-
-                # compute R² for this test trial (obs vs pred)
-                _tr_data = _case_traces[ci]
-                _r2_str = ''
-                if _tr_data is not None and test_pos < _tr_data[0].shape[0]:
-                    _obs_j  = _tr_data[0][test_pos]
-                    _pred_j = _tr_data[1][test_pos]
-                    _ss_res = np.sum((_obs_j - _pred_j)**2)
-                    _ss_tot = np.sum((_obs_j - _obs_j.mean())**2)
-                    _r2_j   = 1 - _ss_res/_ss_tot if _ss_tot > 1e-12 else float('nan')
-                    _r2_str = f'  R²={_r2_j:+.3f}'
-
-                if spike_t_case is not None:
-                    if ANALYSIS_MODE == 'scramble' and perm_s is not None and SCRAMBLE_MODE == 'neural':
-                        # scramble: real spikes in grey underneath, scrambled on top
-                        _t_real, _z_real = _spikes_in_window(spike_t_case, _z_all, t0, t1)
-                        ax.scatter(_t_real, _z_real, s=1, color='lightgray',
-                                   alpha=0.4, rasterized=True)
-                        _t_scr, _z_scr = _reconstruct_scrambled_spike_times(
-                            spike_t_case, _z_all, trial_starts_all, trial_ends_all,
-                            test_i, test_pos, perm_s, n_t, T_TRIAL_ref or dur)
-                        ax.scatter(_t_scr, _z_scr, s=1, color=clr,
-                                   alpha=0.25, rasterized=True, label='scrambled')
-                    else:
-                        # shuffle or behaviour-scramble: just plot (shifted) spikes
-                        _t_rel, _z_spk = _spikes_in_window(spike_t_case, _z_all, t0, t1)
-                        ax.scatter(_t_rel, _z_spk,
-                                   s=1, color=clr if shift_s > 0 else 'black',
-                                   alpha=0.12, rasterized=True)
-
-                    # GMM component centroids at right edge of trial window
-                    if gmm_obj is not None and hasattr(gmm_obj, 'means_'):
-                        _wm_t_mean = wm[_vp, :, :].mean(axis=1)  # (n_comp,)
-                        _gmm_z = np.asarray(gmm_obj.means_[:, 1]).ravel()
-                        # Guard against component-count mismatch between wm and GMM.
-                        _n_plot = min(len(_wm_t_mean), len(_gmm_z))
-                        if _n_plot > 0:
-                            _wm_plot = _wm_t_mean[:_n_plot]
-                            _z_plot = _gmm_z[:_n_plot]
-                            _wmax = np.nanmax(_wm_plot) + 1e-9
-                            _sizes_gm = (_wm_plot / _wmax * 80).clip(1, 80)
-                            _x_centroids = np.full(_n_plot, dur * 1.06)
-                            ax.scatter(_x_centroids, _z_plot,
-                                       s=_sizes_gm, c=_wm_plot, cmap='hot_r',
-                                       alpha=0.8, edgecolors='k', linewidths=0.3,
-                                       zorder=5, clip_on=False)
-                ax.set_xlim(-0.05 * dur, dur * 1.22)
-                ax.set_ylim(_z_all.min() * 0.95 if _z_all is not None else 0,
-                            _z_all.max() * 1.05 if _z_all is not None else 4000)
-            else:
-                ax.text(0.5, 0.5, 'no timing', ha='center', va='center',
-                        transform=ax.transAxes, fontsize=7)
-                _r2_str = ''
-
-            ax.set_xlabel('Time in trial (s)', fontsize=6)
-            ax.set_ylabel('Depth z (µm)', fontsize=6)
-            ax.tick_params(labelsize=5); ax.grid(True, alpha=0.15)
-            _sec_lbl = f'[A] test {test_pos}' if ti == 0 else f'test {test_pos}'
-            _title   = f'{_sec_lbl}{_r2_str}'
-            if ti == 0:
-                _title = lbl.split('\n')[0] + '\n' + _title
-            ax.set_title(_title, fontsize=6.5)
-
-        # ── Section B: weight-matrix heatmap per test trial ────────────────────
-        _wm_vmax = float(np.nanpercentile(wm[test_i], 97)) if test_i is not None else 3.0
-
-        for ti, test_pos in enumerate(_show_test_pos):
-            row = _n_rows_A + ti
-            ax  = fig_nc.add_subplot(gs[row, ci])
-
-            if test_i is not None:
-                _vp = test_i[test_pos]
-                _wm_sorted = wm[_vp][sort_c, :]   # (n_comp, n_t)
-            else:
-                _wm_sorted = np.zeros((n_comp, n_t))
-
-            im = ax.imshow(_wm_sorted, aspect='auto', cmap='viridis',
-                           vmin=0, vmax=_wm_vmax, origin='lower',
-                           interpolation='nearest',
-                           extent=[0, T_TRIAL_ref or 5.0, 0, n_comp])
-            if ci == 0:
-                ax.set_ylabel('Comp (depth ↑)', fontsize=6)
-            ax.set_xlabel('Time (s)', fontsize=6)
-            ax.tick_params(labelsize=5)
-            _ttl2 = '[B] weight matrix' if ti == 0 else f'test {test_pos}'
-            ax.set_title(_ttl2, fontsize=7)
-            if ti == 0:
-                plt.colorbar(im, ax=ax, pad=0.02, shrink=0.8,
-                             label='wt', fraction=0.04)
-            _step = max(1, n_comp // 6)
-            _ytk  = np.arange(0, n_comp, _step)
-            ax.set_yticks(_ytk)
-            ax.set_yticklabels([f'{z_sorted[i]:.0f}' for i in _ytk], fontsize=4)
-
-        # ── Section C: training template ──────────────────────────────────────
-        row_C = _n_rows_A + _n_rows_B
-        ax_C  = fig_nc.add_subplot(gs[row_C, ci])
-        _wm_tmpl = wm[train_i].mean(axis=0)[sort_c, :]   # (n_comp, n_t)
-        _vmax_C  = float(np.nanpercentile(_wm_tmpl, 97))
-        im_C = ax_C.imshow(_wm_tmpl, aspect='auto', cmap='viridis',
-                           vmin=0, vmax=_vmax_C, origin='lower',
-                           interpolation='nearest',
-                           extent=[0, T_TRIAL_ref or 5.0, 0, n_comp])
-        ax_C.set_title(f'[C] Training template ({len(train_i)} train trials)',
-                       fontsize=7)
-        ax_C.set_xlabel('Time (s)', fontsize=6)
-        if ci == 0: ax_C.set_ylabel('Comp (depth ↑)', fontsize=6)
-        ax_C.tick_params(labelsize=5)
-        plt.colorbar(im_C, ax=ax_C, pad=0.02, shrink=0.8,
-                     label='mean wt', fraction=0.04)
-        _step = max(1, n_comp // 6)
-        _ytk  = np.arange(0, n_comp, _step)
-        ax_C.set_yticks(_ytk); ax_C.set_yticklabels(
-            [f'{z_sorted[i]:.0f}' for i in _ytk], fontsize=4)
-
-        # ── Section D: beta heatmap ────────────────────────────────────────────
-        row_D = _n_rows_A + _n_rows_B + 1
-        ax_D  = fig_nc.add_subplot(gs[row_D, ci])
-        if beta is not None:
-            _beta_sorted = beta[sort_c, :]   # (n_comp, n_t), depth-sorted
-            _bmax = float(np.nanpercentile(np.abs(_beta_sorted), 99))
-            im_D = ax_D.imshow(_beta_sorted, aspect='auto', cmap='RdBu_r',
-                               vmin=-_bmax, vmax=_bmax, origin='lower',
-                               interpolation='nearest',
-                               extent=[0, T_TRIAL_ref or 5.0, 0, n_comp])
-            ax_D.set_title('[D] Beta (U@V) — GLM tuning', fontsize=7)
-            plt.colorbar(im_D, ax=ax_D, pad=0.02, shrink=0.8,
-                         label='tuning coef', fraction=0.04)
-        else:
-            ax_D.text(0.5, 0.5, 'beta not found\nrun decode_pipeline first',
-                      ha='center', va='center', transform=ax_D.transAxes,
-                      fontsize=8, color='gray')
-            ax_D.set_title('[D] Beta (U@V) — not found', fontsize=7)
-        ax_D.set_xlabel('Time (s)', fontsize=6)
-        if ci == 0: ax_D.set_ylabel('Comp (depth ↑)', fontsize=6)
-        ax_D.tick_params(labelsize=5)
-        _step = max(1, n_comp // 6)
-        _ytk  = np.arange(0, n_comp, _step)
-        ax_D.set_yticks(_ytk); ax_D.set_yticklabels(
-            [f'{z_sorted[i]:.0f}' for i in _ytk], fontsize=4)
-
-    # ── Column n_cases: decode traces (obs + all cases predicted) ─────────────
-    col_tr = n_cases
-    _tr_colours = ['tab:blue'] + [cd['clr'] for cd in all_case_data[1:]]
-    _tr_labels  = ['Real run'] + [cd['lbl'].split('\n')[0] for cd in all_case_data[1:]]
-
-    for ti, test_pos in enumerate(_show_test_pos):
-        row_tr = ti   # decode traces go in rows 0..n_show-1 (section A rows)
-        ax_tr  = fig_nc.add_subplot(gs[row_tr, col_tr])
-
-        _plotted_obs = False
-        for ci_tr, (tr_data, clr_tr, lbl_tr) in enumerate(
-                zip(_case_traces, _tr_colours, _tr_labels)):
-            if tr_data is None or test_pos >= tr_data[0].shape[0]:
+    for j in range(_min_n):
+        # ── col 0/1: null histograms (R², r) ──────────────────────────────────
+        for col_i, (null_mat, real_val, label) in enumerate([
+            (_null_r2_mat, _real_r2_trial[j], 'R²'),
+            (_null_r_mat,  _real_r_trial[j],  'Pearson r'),
+        ]):
+            ax = axes5[j, col_i]
+            vals = null_mat[:, j]
+            vals = vals[~np.isnan(vals)]
+            if len(vals) == 0:
+                ax.text(0.5, 0.5, 'no data', ha='center', va='center',
+                       transform=ax.transAxes, fontsize=8, color='gray')
                 continue
-            obs_j  = tr_data[0][test_pos]
-            pred_j = tr_data[1][test_pos]
-            t_ax_tr = tr_data[2]
-            _ss_res = np.sum((obs_j - pred_j)**2)
-            _ss_tot = np.sum((obs_j - obs_j.mean())**2)
-            _r2_tr  = 1 - _ss_res/_ss_tot if _ss_tot > 1e-12 else float('nan')
-            if not _plotted_obs:
-                ax_tr.plot(t_ax_tr, obs_j, color='darkgray', lw=1.4,
-                           label=f'observed')
-                _plotted_obs = True
-            ax_tr.plot(t_ax_tr, pred_j, color=clr_tr, lw=1.2, alpha=0.9,
-                       label=f'{lbl_tr}  R²={_r2_tr:+.3f}')
+            ax.hist(vals, bins=min(20, len(vals)//2 + 1),
+                   color='steelblue', edgecolor='white', alpha=0.8)
+            for pct, ls in [(5, '--'), (50, '-'), (95, '--')]:
+                v = np.percentile(vals, pct)
+                ax.axvline(v, color='orange', lw=1.0, ls=ls)
+            ax.axvline(0, color='black', lw=0.8, ls=':', alpha=0.5)
+            if not np.isnan(real_val):
+                ax.axvline(real_val, color='crimson', lw=2.2,
+                          label=f'Real={real_val:+.4f}')
+                p_val = (vals >= real_val).mean()
+                ax.text(0.98, 0.92, f'p={p_val:.3f}', color='crimson',
+                       fontsize=8, ha='right', va='top', transform=ax.transAxes)
+            ax.set_title(f'test {j} — {label}', fontsize=8)
+            ax.tick_params(labelsize=6)
+            ax.grid(True, alpha=0.15)
+            if col_i == 0:
+                ax.set_ylabel('Count', fontsize=7)
+            if j == _min_n - 1:
+                ax.set_xlabel(label, fontsize=7)
+            if real_val is not None and not np.isnan(real_val):
+                ax.legend(fontsize=6, loc='upper left')
 
-        if row_tr == 0:
-            ax_tr.set_title(f'Decode traces\ntest {test_pos}', fontsize=7)
-            ax_tr.legend(fontsize=4.5, loc='upper right')
+        # ── col 2: decode traces — observed, real pred, best-r null, worst-r null ──
+        ax_tr = axes5[j, 2]
+        r_col = _null_r_mat[:, j]
+        _valid_idx = np.where(~np.isnan(r_col))[0]
+        if len(_valid_idx) == 0:
+            ax_tr.text(0.5, 0.5, 'no null runs', ha='center', va='center',
+                      transform=ax_tr.transAxes, fontsize=8, color='gray')
         else:
-            ax_tr.set_title(f'test {test_pos}', fontsize=7)
-        ax_tr.set_xlabel('Time (s)', fontsize=6)
-        ax_tr.set_ylabel(BEH_VAR, fontsize=6)
-        ax_tr.tick_params(labelsize=5); ax_tr.grid(True, alpha=0.15)
+            idx_best  = _valid_idx[np.argmax(r_col[_valid_idx])]
+            idx_worst = _valid_idx[np.argmin(r_col[_valid_idx])]
+            obs_j        = _obs_real_trim[j]
+            real_pred_j  = _pred_real_trim[j]
+            best_pred_j  = _null_pred_trim[idx_best][j]
+            worst_pred_j = _null_pred_trim[idx_worst][j]
 
-    # fill remaining rows in trace column with empty axes
-    for row_empty in range(_n_show_t, _n_rows_total):
-        ax_e = fig_nc.add_subplot(gs[row_empty, col_tr])
-        ax_e.set_visible(False)
+            ax_tr.plot(_t_ax_trim, obs_j, color='darkgray', lw=1.5, label='observed')
+            ax_tr.plot(_t_ax_trim, real_pred_j, color='tab:blue', lw=1.3,
+                      label=f'real pred (r={_real_r_trial[j]:+.2f})')
+            ax_tr.plot(_t_ax_trim, best_pred_j, color='tab:green', lw=1.1, alpha=0.9,
+                      label=f'best null r={r_col[idx_best]:+.2f} ({_run_label(idx_best)})')
+            ax_tr.plot(_t_ax_trim, worst_pred_j, color='tab:red', lw=1.1, alpha=0.9,
+                      label=f'worst null r={r_col[idx_worst]:+.2f} ({_run_label(idx_worst)})')
+            ax_tr.legend(fontsize=5.5, loc='upper right')
 
-    _p_nc = SHUFFLE_DIR / f'{ANALYSIS_MODE}_neural_comparison_{BEH_VAR}.png'
-    plt.savefig(_p_nc, dpi=130, bbox_inches='tight'); plt.close()
-    print(f"Saved → {_p_nc}")
+        ax_tr.set_title(f'test {j} — decode traces', fontsize=8)
+        ax_tr.tick_params(labelsize=6)
+        ax_tr.grid(True, alpha=0.15)
+        ax_tr.set_ylabel(BEH_VAR, fontsize=7)
+        if j == _min_n - 1:
+            ax_tr.set_xlabel('Time (s)', fontsize=7)
+
+    plt.tight_layout()
+    _p5 = SHUFFLE_DIR / f'{ANALYSIS_MODE}_per_trial_null_r2_r_{BEH_VAR}.png'
+    plt.savefig(_p5, dpi=130, bbox_inches='tight'); plt.close()
+    print(f"Saved → {_p5}")
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ── 6. PER-TRIAL R / R² vs TIME SHIFT (like section 4, but split by trial) ───
+# ══════════════════════════════════════════════════════════════════════════════
+if ANALYSIS_MODE != 'shuffle':
+    print(f"[SKIP] Per-trial R/R² vs shift plot — not applicable in {ANALYSIS_MODE} mode "
+          f"(no shift_sec axis)")
+elif not _null_r2_rows or _n_trials_common is None:
+    print("[SKIP] Per-trial R/R² vs shift plot — insufficient data")
+else:
+    _uniq_shifts = np.sort(np.unique(_null_shift_arr))
+    _xpad6 = (_uniq_shifts.max() - _uniq_shifts.min()) * 0.05 if len(_uniq_shifts) > 1 else 1.0
+
+    # per trial, per shift: mean/std across repeats — grid shape (n_trials, n_shifts)
+    _r2_mean_grid = np.full((_min_n, len(_uniq_shifts)), np.nan)
+    _r2_std_grid  = np.full((_min_n, len(_uniq_shifts)), np.nan)
+    _r_mean_grid  = np.full((_min_n, len(_uniq_shifts)), np.nan)
+    _r_std_grid   = np.full((_min_n, len(_uniq_shifts)), np.nan)
+    for si, sv in enumerate(_uniq_shifts):
+        _rows_at_shift = np.where(_null_shift_arr == sv)[0]
+        _r2_mean_grid[:, si] = np.nanmean(_null_r2_mat[_rows_at_shift, :], axis=0)
+        _r2_std_grid[:, si]  = np.nanstd(_null_r2_mat[_rows_at_shift, :], axis=0)
+        _r_mean_grid[:, si]  = np.nanmean(_null_r_mat[_rows_at_shift, :], axis=0)
+        _r_std_grid[:, si]   = np.nanstd(_null_r_mat[_rows_at_shift, :], axis=0)
+
+    fig6, axes6 = plt.subplots(2, _min_n, figsize=(max(10, _min_n * 2.6), 7),
+                                sharex=True, sharey='row', squeeze=False)
+    fig6.suptitle(f"Per-trial mean R² / r vs time shift — {BEH_VAR}  ({ANALYSIS_MODE})\n"
+                  f"error bars = ±1 std across repeats at each shift  |  "
+                  f"red dashed = real run value for that trial",
+                  fontsize=11)
+
+    for j in range(_min_n):
+        ax_r2 = axes6[0, j]
+        ax_r2.errorbar(_uniq_shifts, _r2_mean_grid[j, :], yerr=_r2_std_grid[j, :],
+                       fmt='o', color='steelblue', ecolor='steelblue',
+                       markersize=8, markeredgecolor='white', markeredgewidth=0.6,
+                       elinewidth=1.0, capsize=2, alpha=0.9)
+        ax_r2.axhline(0, color='black', lw=0.7, ls=':', alpha=0.5)
+        ax_r2.axhline(_real_r2_trial[j], color='crimson', lw=1.6, ls='--',
+                      label='Real' if j == 0 else None)
+        ax_r2.set_title(f'test {j}', fontsize=8)
+        ax_r2.set_xlim(_uniq_shifts.min() - _xpad6, _uniq_shifts.max() + _xpad6)
+        ax_r2.tick_params(labelsize=6)
+        ax_r2.grid(True, alpha=0.15)
+        if j == 0:
+            ax_r2.set_ylabel('R²', fontsize=8)
+            ax_r2.legend(fontsize=6.5, loc='upper right')
+
+        ax_r = axes6[1, j]
+        ax_r.errorbar(_uniq_shifts, _r_mean_grid[j, :], yerr=_r_std_grid[j, :],
+                     fmt='o', color='steelblue', ecolor='steelblue',
+                     markersize=8, markeredgecolor='white', markeredgewidth=0.6,
+                     elinewidth=1.0, capsize=2, alpha=0.9)
+        ax_r.axhline(0, color='black', lw=0.7, ls=':', alpha=0.5)
+        ax_r.axhline(_real_r_trial[j], color='crimson', lw=1.6, ls='--')
+        ax_r.set_xlim(_uniq_shifts.min() - _xpad6, _uniq_shifts.max() + _xpad6)
+        ax_r.tick_params(labelsize=6)
+        ax_r.grid(True, alpha=0.15)
+        ax_r.set_xlabel('Shift (s)', fontsize=7)
+        if j == 0:
+            ax_r.set_ylabel('Pearson r', fontsize=8)
+
+    plt.tight_layout()
+    _p6 = SHUFFLE_DIR / f'{ANALYSIS_MODE}_per_trial_r_r2_vs_shift_{BEH_VAR}.png'
+    plt.savefig(_p6, dpi=130, bbox_inches='tight'); plt.close()
+    print(f"Saved → {_p6}")
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ── 7. POOLED PER-TRIAL DISTRIBUTIONS — real vs null (all trials, all shuffles) ─
+# ══════════════════════════════════════════════════════════════════════════════
+if '_null_r2_mat' not in dir() or _real_r2_trial is None:
+    print("[SKIP] Pooled real-vs-null distribution plot — per-trial data unavailable")
+else:
+    # pool: every (shuffle, trial) r/r2 value in one array; every (real, trial) value in another
+    _null_r2_pool = _null_r2_mat.flatten(); _null_r2_pool = _null_r2_pool[~np.isnan(_null_r2_pool)]
+    _null_r_pool  = _null_r_mat.flatten();  _null_r_pool  = _null_r_pool[~np.isnan(_null_r_pool)]
+    _real_r2_pool = _real_r2_trial[~np.isnan(_real_r2_trial)]
+    _real_r_pool  = _real_r_trial[~np.isnan(_real_r_trial)]
+
+    fig7, axes7 = plt.subplots(2, 2, figsize=(13, 8), sharex='col')
+    fig7.suptitle(f"Pooled per-trial distributions — real vs null  {BEH_VAR}  ({ANALYSIS_MODE})\n"
+                  f"null = every test trial × every {_run_noun[:-1]} "
+                  f"({len(_null_r2_pool)} R² values, {len(_null_r_pool)} r values)  |  "
+                  f"real = every test trial of the real run ({len(_real_r2_pool)} trials)",
+                  fontsize=11)
+
+    for col_i, (real_pool, null_pool, label) in enumerate([
+        (_real_r2_pool, _null_r2_pool, 'R²'),
+        (_real_r_pool,  _null_r_pool,  'Pearson r'),
+    ]):
+        ax_real = axes7[0, col_i]
+        ax_null = axes7[1, col_i]
+
+        _bins = np.linspace(
+            min(real_pool.min() if len(real_pool) else 0, null_pool.min() if len(null_pool) else 0),
+            max(real_pool.max() if len(real_pool) else 1, null_pool.max() if len(null_pool) else 1),
+            40)
+
+        ax_real.hist(real_pool, bins=_bins, color='crimson', edgecolor='white', alpha=0.75)
+        ax_real.axvline(0, color='black', lw=0.8, ls=':', alpha=0.5)
+        if len(real_pool):
+            ax_real.axvline(real_pool.mean(), color='darkred', lw=1.6, ls='-',
+                           label=f'mean={real_pool.mean():+.4f}  std={real_pool.std():.4f}')
+            ax_real.legend(fontsize=7, loc='upper right')
+        ax_real.set_title(f'Real run — per-trial {label}  (n={len(real_pool)})', fontsize=9)
+        ax_real.set_ylabel('Count'); ax_real.grid(True, alpha=0.15)
+
+        ax_null.hist(null_pool, bins=_bins, color='steelblue', edgecolor='white', alpha=0.75)
+        ax_null.axvline(0, color='black', lw=0.8, ls=':', alpha=0.5)
+        if len(null_pool):
+            ax_null.axvline(null_pool.mean(), color='navy', lw=1.6, ls='-',
+                           label=f'mean={null_pool.mean():+.4f}  std={null_pool.std():.4f}')
+            ax_null.legend(fontsize=7, loc='upper right')
+        ax_null.set_title(f'Null ({ANALYSIS_MODE}) — per-trial {label}  (n={len(null_pool)})', fontsize=9)
+        ax_null.set_ylabel('Count'); ax_null.set_xlabel(label); ax_null.grid(True, alpha=0.15)
+
+    plt.tight_layout()
+    _p7 = SHUFFLE_DIR / f'{ANALYSIS_MODE}_pooled_real_vs_null_{BEH_VAR}.png'
+    plt.savefig(_p7, dpi=130, bbox_inches='tight'); plt.close()
+    print(f"Saved → {_p7}")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # ── TEXT SUMMARY ──────────────────────────────────────────────────────────────
