@@ -15,7 +15,7 @@ new recording.  Example usage in peak_localisation.ipynb:
 """
 
 # ── Imports ────────────────────────────────────────────────────────────────────
-import gc
+import inspect
 import json
 import os
 
@@ -28,6 +28,170 @@ import spikeinterface.full as si
 from spikeinterface.core import get_noise_levels
 from spikeinterface.sortingcomponents.peak_detection import detect_peaks
 from spikeinterface.sortingcomponents.tools import get_prototype_and_waveforms_from_peaks
+
+# Canonical peak dtype used for peaks0/peaks1/peaks2/peaks_combined*.
+# 'z' mirrors the field name SpikeInterface's matched_filtering detector uses
+# for its depth/z-factor index (unused/0 for threshold-crossing peaks).
+# 'matched_filter_score' holds the matched-filter similarity score in units
+# of noise (i.e. directly comparable to matched_filter_detect_threshold) for
+# peaks found via matched filtering; it is NaN for threshold-crossing peaks,
+# which have no such score.
+PEAK_DTYPE = [
+    ('sample_index', 'int64'), ('channel_index', 'int64'),
+    ('amplitude', 'float32'), ('segment_index', 'int64'),
+    ('z', 'int64'),
+    ('matched_filter_score', 'float32'),
+]
+
+
+# ── Matched-filtering detector that also records the similarity score ──────────
+# SpikeInterface's built-in 'matched_filtering' detect_peaks() method does not
+# return the matched-filter/convolution score that was actually compared
+# against detect_threshold — only sample/channel/amplitude/z. To be able to
+# inspect (and retroactively re-threshold) that score, we subclass the
+# detector and stash the score, expressed in units of noise (i.e. directly
+# comparable to matched_filter_detect_threshold), into an extra field.
+_HAVE_SCORED_MATCHED_FILTER = False
+try:
+    from spikeinterface.core.node_pipeline import run_node_pipeline
+    from spikeinterface.core.job_tools import fix_job_kwargs
+    try:
+        # SpikeInterface >= ~0.103 (peak_detection is a sub-package)
+        from spikeinterface.sortingcomponents.peak_detection.matched_filtering import (
+            MatchedFilteringPeakDetector as _BaseMatchedFilteringPeakDetector,
+            _numba_detect_peak_matched_filtering,
+        )
+    except ImportError:
+        # Older SpikeInterface (peak_detection.py is a single module)
+        from spikeinterface.sortingcomponents.peak_detection import (
+            MatchedFilteringPeakDetector as _BaseMatchedFilteringPeakDetector,
+            _numba_detect_peak_matched_filtering,
+        )
+    try:
+        from spikeinterface.core.base import base_peak_dtype
+    except ImportError:
+        base_peak_dtype = [
+            ("sample_index", "int64"), ("channel_index", "int64"),
+            ("amplitude", "float64"), ("segment_index", "int64"),
+        ]
+
+    class _ScoredMatchedFilteringPeakDetector(_BaseMatchedFilteringPeakDetector):
+        """Same as MatchedFilteringPeakDetector but also outputs the
+        matched-filter similarity score (in units of noise) for every
+        detected peak, as field 'matched_filter_score'."""
+
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self._dtype = np.dtype(base_peak_dtype + [("z", "float32"), ("matched_filter_score", "float32")])
+
+        def compute(self, traces, start_frame, end_frame, segment_index, max_margin):
+            conv_traces = self.get_convolved_traces(traces)
+            conv_traces = conv_traces[:, self.conv_margin: -self.conv_margin]
+
+            # SpikeInterface >= 0.103 uses a newer numba helper that expects
+            # both the centered traces and a boolean peak mask.
+            numba_sig = inspect.signature(_numba_detect_peak_matched_filtering)
+            if len(numba_sig.parameters) == 5:
+                conv_traces = conv_traces.reshape(self.num_z_factors, self.num_templates, conv_traces.shape[1])
+                z_inds, template_inds, samples_inds = _numba_detect_peak_matched_filtering(
+                    conv_traces,
+                    self.exclude_sweep_size,
+                    self.abs_thresholds,
+                    self.neighbours_mask,
+                    self.num_channels,
+                )
+            else:
+                conv_traces = conv_traces / self.abs_thresholds[:, None]
+                traces_center = conv_traces[:, self.exclude_sweep_size: -self.exclude_sweep_size]
+                traces_center = traces_center.reshape(self.num_z_factors, self.num_templates, traces_center.shape[1])
+                conv_traces = conv_traces.reshape(self.num_z_factors, self.num_templates, conv_traces.shape[1])
+
+                peak_mask = traces_center > 1
+                peak_mask = _numba_detect_peak_matched_filtering(
+                    conv_traces,
+                    traces_center,
+                    peak_mask,
+                    self.exclude_sweep_size,
+                    self.abs_thresholds,
+                    self.peak_sign,
+                    self.neighbours_mask,
+                    self.num_channels,
+                )
+                z_inds, template_inds, samples_inds = np.nonzero(peak_mask)
+                if self.peak_sign == "both":
+                    template_inds = template_inds % self.num_channels
+
+            if z_inds.size == 0:
+                return (np.zeros(0, dtype=self._dtype),)
+
+            chan_inds = template_inds
+            if self.peak_sign == "both":
+                chan_inds = chan_inds % self.num_channels
+
+            # Raw matched-filter (convolution) score at each detected peak,
+            # converted to units of noise so it's directly comparable to
+            # detect_threshold/matched_filter_detect_threshold regardless of
+            # what threshold was actually used during this detection run.
+            raw_scores = conv_traces[z_inds, template_inds, samples_inds]
+            flat_thresholds = self.abs_thresholds.reshape(-1)
+            if flat_thresholds.ndim == 1:
+                thresholds_at_peak = flat_thresholds[z_inds * self.num_templates + template_inds]
+            else:
+                thresholds_at_peak = flat_thresholds[z_inds, template_inds]
+            scores_in_noise_units = raw_scores * (self.detect_threshold / thresholds_at_peak)
+
+            samples_inds = samples_inds + self.conv_margin + self.nbefore
+            peak_amplitudes = traces[samples_inds, chan_inds]
+
+            local_peaks = np.zeros(samples_inds.size, dtype=self._dtype)
+            local_peaks["sample_index"] = samples_inds
+            local_peaks["channel_index"] = chan_inds
+            local_peaks["amplitude"] = peak_amplitudes
+            local_peaks["segment_index"] = segment_index
+            local_peaks["z"] = z_inds
+            local_peaks["matched_filter_score"] = scores_in_noise_units
+
+            return (local_peaks,)
+
+    _HAVE_SCORED_MATCHED_FILTER = True
+except ImportError as _e:
+    _SCORED_MATCHED_FILTER_IMPORT_ERROR = str(_e)
+
+
+def detect_matched_filtering_peaks_with_score(recording, method_kwargs, job_kwargs, verbose=True):
+    """
+    Run matched-filtering peak detection (same algorithm as
+    detect_peaks(method='matched_filtering')) but also record, for every
+    detected peak, the matched-filter similarity score (in units of noise,
+    directly comparable to method_kwargs['detect_threshold']) in a field
+    called 'matched_filter_score'.
+
+    Falls back to the standard detect_peaks() (with matched_filter_score
+    filled with NaN, and a warning printed) if the internal SpikeInterface
+    APIs this depends on are not available in the installed version.
+    """
+    if not _HAVE_SCORED_MATCHED_FILTER:
+        print(f"WARNING: could not import internals needed to record matched-filter "
+              f"scores ({_SCORED_MATCHED_FILTER_IMPORT_ERROR}). Falling back to standard "
+              f"detect_peaks(); 'matched_filter_score' will be NaN for all peaks_matched.")
+        peaks = detect_peaks(
+            recording=recording, method='matched_filtering',
+            method_kwargs=method_kwargs, verbose=verbose, job_kwargs=job_kwargs,
+        )
+        out = np.zeros(len(peaks), dtype=PEAK_DTYPE)
+        for name in ('sample_index', 'channel_index', 'amplitude', 'segment_index'):
+            out[name] = peaks[name]
+        out['z'] = peaks['z'].astype(np.int64) if 'z' in peaks.dtype.names else 0
+        out['matched_filter_score'] = np.nan
+        return out
+
+    node0 = _ScoredMatchedFilteringPeakDetector(recording, **method_kwargs)
+    job_kwargs = fix_job_kwargs(job_kwargs)
+    peaks = run_node_pipeline(
+        recording, [node0], job_kwargs, job_name="detect peaks (matched_filtering, scored)",
+        squeeze_output=True, verbose=verbose,
+    )
+    return peaks
 
 
 # ── Data loading ───────────────────────────────────────────────────────────────
@@ -182,15 +346,14 @@ def convert_peak_mask_to_peaks(peak_mask, traces, chunk_start_frame=0):
     peak_sample_ind, peak_chan_ind = np.nonzero(peak_mask)
 
     peak_amplitudes = traces[peak_sample_ind, peak_chan_ind]
-    peaks = np.zeros(len(peak_sample_ind), dtype=[
-        ('sample_index', 'int64'), ('channel_index', 'int64'),
-        ('amplitude', 'float32'), ('segment_index', 'int64'),
-        ('z', 'int64')
-    ])
+    peaks = np.zeros(len(peak_sample_ind), dtype=PEAK_DTYPE)
 
     peaks['sample_index'] = peak_sample_ind + chunk_start_frame   # global index
     peaks['channel_index'] = peak_chan_ind
     peaks['amplitude'] = peak_amplitudes
+    # Threshold-crossing peaks have no matched-filter similarity score;
+    # mark with NaN so they're clearly distinguishable from peaks_matched.
+    peaks['matched_filter_score'] = np.nan
 
     return peaks
 
@@ -245,10 +408,7 @@ def thresholding_chunked(rec, sampling_frequency, noise_levels,
     )
 
     all_peaks = [p for p in results if len(p) > 0]
-    return np.concatenate(all_peaks) if all_peaks else np.array([], dtype=[
-        ('sample_index', 'int64'), ('channel_index', 'int64'),
-        ('amplitude', 'float32'), ('segment_index', 'int64'), ('z', 'int64')
-    ])
+    return np.concatenate(all_peaks) if all_peaks else np.array([], dtype=PEAK_DTYPE)
 
 
 # ── Stage 2: spatial & temporal filter ────────────────────────────────────────
@@ -462,7 +622,8 @@ def _numba_check_neighbor_support_fixed_radius(
     peak_samples, peak_chans, traces, noise_levels,
     detect_threshold, support_fraction, n_required,
     half_sweep_samples,
-    chunk_start_frame   # subtract to get local index into this chunk's traces
+    chunk_start_frame,  # subtract to get local index into this chunk's traces
+    support_radius      # how many channels to check on each side of the peak channel
 ):
     num_peaks   = len(peak_samples)
     keep_mask   = np.zeros(num_peaks, dtype=numba.boolean)
@@ -477,23 +638,29 @@ def _numba_check_neighbor_support_fixed_radius(
         t_start = max(0, t_center_local - half_sweep_samples)
         t_end   = min(num_samples, t_center_local + half_sweep_samples + 1)
 
-        for offset in (-2, -1, 1, 2):
-            neighbor = c + offset
-            if neighbor < 0 or neighbor >= num_chans:
-                continue
+        done = False
+        for r in range(1, support_radius + 1):
+            for sign in (-1, 1):
+                offset = sign * r
+                neighbor = c + offset
+                if neighbor < 0 or neighbor >= num_chans:
+                    continue
 
-            support_thresh = -(noise_levels[neighbor] * detect_threshold * support_fraction)
+                support_thresh = -(noise_levels[neighbor] * detect_threshold * support_fraction)
 
-            neighbor_supported = False
-            for t_idx in range(t_start, t_end):
-                if traces[t_idx, neighbor] < support_thresh:
-                    neighbor_supported = True
+                neighbor_supported = False
+                for t_idx in range(t_start, t_end):
+                    if traces[t_idx, neighbor] < support_thresh:
+                        neighbor_supported = True
+                        break
+
+                if neighbor_supported:
+                    support_count += 1
+
+                if support_count >= n_required:
+                    done = True
                     break
-
-            if neighbor_supported:
-                support_count += 1
-
-            if support_count >= n_required:
+            if done:
                 break
 
         keep_mask[p] = (support_count >= n_required)
@@ -504,6 +671,7 @@ def _numba_check_neighbor_support_fixed_radius(
 def filter_peaks_by_spatial_support(
     peaks, rec, noise_levels, sampling_frequency,
     detect_threshold=3.3, support_fraction=0.5, n_required=1,
+    support_radius=2,
     exclude_sweep_ms=0.1,
     chunk_size_s=60.0
 ):
@@ -511,6 +679,12 @@ def filter_peaks_by_spatial_support(
     Chunked spatial-support filter. Fetches only a small window of traces per
     chunk, runs the filter, then discards the traces.
     peaks must already carry *global* sample indices.
+
+    A peak is kept if at least ``n_required`` of the channels within
+    ``support_radius`` channels of the peak channel (on either side) also
+    cross a lowered threshold of ``support_fraction * detect_threshold``
+    (in units of that neighbor channel's noise level) within the same
+    temporal window as the peak.
     """
     print(f"Filtering {len(peaks)} peaks for spatial support (window: {exclude_sweep_ms}ms, "
           f"chunk: {chunk_size_s}s)...")
@@ -555,7 +729,8 @@ def filter_peaks_by_spatial_support(
                     np.float64(support_fraction),
                     np.int64(n_required),
                     np.int64(half_sweep_s),
-                    np.int64(fetch_start)
+                    np.int64(fetch_start),
+                    np.int64(support_radius)
                 )
 
                 keep_mask_global[chunk_peaks_orig] = chunk_keep
@@ -572,175 +747,6 @@ def filter_peaks_by_spatial_support(
 
 # ── Main pipeline entry point ──────────────────────────────────────────────────
 
-def _run_pipeline_in_time_chunks(
-    rec,
-    fs,
-    n_chans,
-    noise_levels,
-    detect_threshold,
-    exclude_sweep_ms,
-    spatial_radius,
-    chunk_size_s,
-    n_jobs,
-    proto_n_jobs,
-    save_dir,
-    file_names,
-    n_chunks=1,
-):
-    """Run the full MUA peak-detection workflow in time chunks and concatenate results."""
-    n_chunks = max(1, int(n_chunks))
-    total_samples = rec.get_num_samples()
-    if n_chunks <= 1:
-        return None
-
-    chunk_size_samp = max(1, int(np.ceil(total_samples / n_chunks)))
-    print(f"Running full MUA pipeline in {n_chunks} time chunks of ~{chunk_size_samp} samples")
-
-    chunk_cache_dir = os.path.join(save_dir, "chunk_cache")
-    os.makedirs(chunk_cache_dir, exist_ok=True)
-    empty_peak_dtype = np.dtype([
-        ('sample_index', 'int64'),
-        ('channel_index', 'int64'),
-        ('amplitude', 'float32'),
-        ('segment_index', 'int64'),
-        ('z', 'int64'),
-    ])
-    chunk_output_paths = []
-
-    for chunk_idx in range(n_chunks):
-        start_frame = chunk_idx * chunk_size_samp
-        end_frame = min(start_frame + chunk_size_samp, total_samples)
-        if start_frame >= end_frame:
-            continue
-
-        print(f"  chunk {chunk_idx + 1}/{n_chunks}: frames {start_frame}-{end_frame}")
-        chunk_rec = rec.frame_slice(start_frame=start_frame, end_frame=end_frame)
-        chunk_rec = chunk_rec.astype('float32')
-
-        chunk_peaks0 = thresholding_chunked(
-            chunk_rec,
-            fs,
-            noise_levels,
-            detect_threshold=detect_threshold,
-            exclude_sweep_ms=exclude_sweep_ms,
-            chunk_size_s=chunk_size_s,
-            n_jobs=n_jobs,
-        )
-        chunk_peaks0 = chunk_peaks0.copy()
-
-        bio_windows, chunk_peaks1 = spatial_and_temporal_filter(
-            chunk_peaks0,
-            noise_levels,
-            fs,
-            n_chans=n_chans,
-            exclude_sweep_ms=exclude_sweep_ms,
-            spatial_radius=spatial_radius,
-        )
-        chunk_peaks2 = filter_peaks_by_spatial_support(
-            chunk_peaks1,
-            chunk_rec,
-            noise_levels,
-            sampling_frequency=fs,
-            detect_threshold=detect_threshold,
-            support_fraction=0.7,
-            n_required=1,
-            exclude_sweep_ms=exclude_sweep_ms,
-            chunk_size_s=chunk_size_s,
-        )
-
-        prototype, waveforms, few_peaks = get_prototype_and_waveforms_from_peaks(
-            chunk_rec,
-            chunk_peaks1,
-            ms_before=1,
-            ms_after=1,
-            job_kwargs=dict(n_jobs=proto_n_jobs, chunk_duration='1s', progress_bar=False),
-        )
-        method_kwargs = dict(
-            peak_sign='neg',
-            detect_threshold=detect_threshold - 0.2,
-            exclude_sweep_ms=0.1,
-            prototype=prototype,
-            ms_before=1,
-        )
-        job_kwargs_matched = dict(n_jobs=4, chunk_duration='1s', progress_bar=False)
-        chunk_peaks_matched = detect_peaks(
-            recording=chunk_rec,
-            method='matched_filtering',
-            method_kwargs=method_kwargs,
-            verbose=False,
-            job_kwargs=job_kwargs_matched,
-        )
-        if len(chunk_peaks_matched) > 0:
-            chunk_peaks_matched = chunk_peaks_matched.copy()
-            chunk_peaks_matched['sample_index'] = chunk_peaks_matched['sample_index'].astype(np.int64) + int(start_frame)
-
-        chunk_paths = {
-            'peaks0': os.path.join(chunk_cache_dir, f'peaks0_chunk_{chunk_idx:03d}.npy'),
-            'peaks1': os.path.join(chunk_cache_dir, f'peaks1_chunk_{chunk_idx:03d}.npy'),
-            'peaks2': os.path.join(chunk_cache_dir, f'peaks2_chunk_{chunk_idx:03d}.npy'),
-            'peaks_matched': os.path.join(chunk_cache_dir, f'peaks_matched_chunk_{chunk_idx:03d}.npy'),
-        }
-        np.save(chunk_paths['peaks0'], chunk_peaks0)
-        np.save(chunk_paths['peaks1'], chunk_peaks1)
-        np.save(chunk_paths['peaks2'], chunk_peaks2)
-        np.save(chunk_paths['peaks_matched'], chunk_peaks_matched)
-        chunk_output_paths.append(chunk_paths)
-
-        del chunk_rec, chunk_peaks0, chunk_peaks1, chunk_peaks2, chunk_peaks_matched, bio_windows, prototype, waveforms, few_peaks
-        gc.collect()
-
-    if not chunk_output_paths:
-        return None
-
-    def _load_and_concat_chunk_arrays(paths, empty_dtype):
-        combined = None
-        for path in paths:
-            if not os.path.isfile(path):
-                continue
-            chunk_arr = np.load(path)
-            if len(chunk_arr) == 0:
-                continue
-            combined = chunk_arr if combined is None else np.concatenate((combined, chunk_arr))
-        if combined is None:
-            return np.array([], dtype=empty_dtype)
-        return combined
-
-    peaks0 = _load_and_concat_chunk_arrays([paths['peaks0'] for paths in chunk_output_paths], empty_peak_dtype)
-    peaks1 = _load_and_concat_chunk_arrays([paths['peaks1'] for paths in chunk_output_paths], empty_peak_dtype)
-    peaks2 = _load_and_concat_chunk_arrays([paths['peaks2'] for paths in chunk_output_paths], empty_peak_dtype)
-    peaks_matched = _load_and_concat_chunk_arrays([paths['peaks_matched'] for paths in chunk_output_paths], empty_peak_dtype)
-
-    np.save(file_names['peaks0'], peaks0)
-    np.save(file_names['peaks1'], peaks1)
-    np.save(file_names['peaks2'], peaks2)
-    np.save(file_names['peaks_matched'], peaks_matched)
-    print(f"  Saved chunked outputs: {file_names['peaks0']}, {file_names['peaks1']}, {file_names['peaks2']}, {file_names['peaks_matched']}")
-
-    peaks_combined = np.concatenate([peaks1, peaks_matched])
-    _, peaks_combined1 = spatial_and_temporal_filter(
-        peaks_combined,
-        noise_levels,
-        fs,
-        n_chans=n_chans,
-        exclude_sweep_ms=exclude_sweep_ms,
-        spatial_radius=spatial_radius,
-    )
-    peaks_combined2 = filter_peaks_by_spatial_support(
-        peaks_combined1,
-        rec,
-        noise_levels,
-        sampling_frequency=fs,
-        detect_threshold=detect_threshold,
-        support_fraction=0.7,
-        n_required=1,
-        exclude_sweep_ms=exclude_sweep_ms,
-        chunk_size_s=chunk_size_s,
-    )
-    np.save(file_names['peaks_combined1'], peaks_combined1)
-    np.save(file_names['peaks_combined2'], peaks_combined2)
-    return peaks_combined2, peaks_combined1, peaks_matched, peaks0, peaks1, peaks2
-
-
 def run_mua_pipeline(
     bin_path,
     ops=None,                   # Kilosort ops dict (for extracting probe geom)
@@ -754,7 +760,28 @@ def run_mua_pipeline(
     load_computed_data=False,   # if True, load from disk if files exist; else compute
     folder_name="thresholding_peaks",  # subfolder to save peaks in
     rolling_noise_dir=None,     # path to rolling_snr/ dir; None → use si.get_noise_levels()
-    n_chunks=1,
+    # --- Spatial support filter (neighbor-channel check) ---
+    support_radius=2,           # how many channels to check on each side of the peak channel
+    support_fraction=0.7,       # lowered-threshold fraction (of detect_threshold) a neighbor must cross
+    support_n_required=1,       # how many of the checked neighbor channels must pass
+    # --- Matched-filter detection (peaks_matched) ---
+    matched_filter_detect_threshold=None,  # detect_threshold used for matched filtering itself
+                                            # (controls how similar a peak must be to the learned
+                                            # prototype to be detected in the first place).
+                                            # If None, defaults to detect_threshold - 0.2 (old behaviour).
+    matched_amplitude_threshold=None,      # post-hoc amplitude threshold (in units of noise) applied
+                                            # to peaks_matched after detection. If None, no extra
+                                            # filtering is applied (old behaviour).
+    # --- Matched-filter detection: other previously-hardcoded knobs ---
+    matched_filter_peak_sign='neg',        # 'neg', 'pos', or 'both'
+    matched_filter_exclude_sweep_ms=0.1,   # temporal exclusion window for matched-filter detection
+    matched_filter_radius_um=50,           # spatial radius (um) for locally-exclusive matched detection
+    matched_filter_n_jobs=8,               # workers for the matched-filtering detection job
+    matched_filter_chunk_duration='1s',    # chunk duration for the matched-filtering detection job
+    # --- Prototype/waveform extraction (feeds matched filtering) ---
+    proto_ms_before=1.0,
+    proto_ms_after=1.0,
+    proto_chunk_duration='1s',
 ):
     """
     Run the full MUA thresholding pipeline on a recording.
@@ -851,7 +878,38 @@ def run_mua_pipeline(
         "proto_n_jobs": int(proto_n_jobs),
         "load_computed_data": bool(load_computed_data),
         "folder_name": str(folder_name),
-        "n_chunks": int(n_chunks),
+        "rolling_noise_dir": str(rolling_noise_dir) if rolling_noise_dir is not None else None,
+
+        # Spatial support filter (neighbor-channel check)
+        "support_radius": int(support_radius),
+        "support_fraction": float(support_fraction),
+        "support_n_required": int(support_n_required),
+
+        # Matched-filter detection
+        "matched_filter_detect_threshold": (
+            float(matched_filter_detect_threshold)
+            if matched_filter_detect_threshold is not None
+            else float(detect_threshold - 0.2)
+        ),
+        "matched_amplitude_threshold": (
+            float(matched_amplitude_threshold)
+            if matched_amplitude_threshold is not None
+            else None
+        ),
+        "matched_filter_peak_sign": str(matched_filter_peak_sign),
+        "matched_filter_exclude_sweep_ms": float(matched_filter_exclude_sweep_ms),
+        "matched_filter_radius_um": float(matched_filter_radius_um),
+        "matched_filter_n_jobs": int(matched_filter_n_jobs),
+        "matched_filter_chunk_duration": str(matched_filter_chunk_duration),
+        "matched_filter_score_recorded": bool(_HAVE_SCORED_MATCHED_FILTER),
+
+        # Prototype / waveform extraction (feeds matched filtering)
+        "proto_ms_before": float(proto_ms_before),
+        "proto_ms_after": float(proto_ms_after),
+        "proto_chunk_duration": str(proto_chunk_duration),
+
+        # Provenance
+        "spikeinterface_version": str(getattr(si, "__version__", "unknown")),
         "timestamp_created": datetime.now().isoformat(),
     }
     params_file = os.path.join(save_dir, "params.json")
@@ -869,7 +927,7 @@ def run_mua_pipeline(
         "peaks2":          os.path.join(save_dir, "peaks2.npy"),
     }
 
-    if load_computed_data and int(n_chunks) <= 1:
+    if load_computed_data:
         _missing = [k for k, p in _file_names.items() if not os.path.isfile(p)]
         if not _missing:
             print(f"Loading pre-computed peaks from {save_dir}")
@@ -883,10 +941,7 @@ def run_mua_pipeline(
         else:
             print(f"Data not found in {save_dir} (missing: {', '.join(_missing)}), computing data...")
     else:
-        if int(n_chunks) > 1:
-            print(f"Chunked full-pipeline mode requested (n_chunks={n_chunks}); recomputing peaks...")
-        else:
-            print("Computing data...")
+        print("Computing data...")
 
     # ── 2. Noise & config ───────────────────────────────────────────────────
     fs      = rec.sampling_frequency
@@ -909,33 +964,7 @@ def run_mua_pipeline(
         print("Computing static noise levels (si.get_noise_levels) ...")
         noise_levels = get_noise_levels(rec, return_in_uV=False)
 
-    # ── 3. Threshold detection and downstream peak processing ──────────────
-    if int(n_chunks) > 1:
-        chunked_result = _run_pipeline_in_time_chunks(
-            rec,
-            fs,
-            n_chans,
-            noise_levels,
-            detect_threshold,
-            exclude_sweep_ms,
-            spatial_radius,
-            chunk_size_s,
-            n_jobs,
-            proto_n_jobs,
-            save_dir,
-            _file_names,
-            n_chunks=n_chunks,
-        )
-        if chunked_result is not None:
-            peaks_combined2, peaks_combined1, peaks_matched, peaks0, peaks1, peaks2 = chunked_result
-            print(f"peaks0: {len(peaks0)}")
-            print(f"peaks1: {len(peaks1)}")
-            print(f"peaks2: {len(peaks2)}")
-            print(f"peaks_matched: {len(peaks_matched)}")
-            print(f"peaks_combined1: {len(peaks_combined1)}")
-            print(f"peaks_combined2: {len(peaks_combined2)}")
-            return rec, peaks_combined2, peaks_combined1, peaks_matched, peaks0, peaks1, peaks2
-
+    # ── 3. Threshold detection (chunked) ────────────────────────────────────
     print("thresholding (chunked)...")
     peaks0 = thresholding_chunked(
         rec, fs, noise_levels,
@@ -972,8 +1001,9 @@ def run_mua_pipeline(
         peaks1, rec, noise_levels,
         sampling_frequency=fs,
         detect_threshold=detect_threshold,
-        support_fraction=0.7,
-        n_required=1,
+        support_fraction=support_fraction,
+        n_required=support_n_required,
+        support_radius=support_radius,
         exclude_sweep_ms=exclude_sweep_ms,
         chunk_size_s=chunk_size_s
     )
@@ -985,29 +1015,69 @@ def run_mua_pipeline(
     prototype, waveforms, few_peaks = get_prototype_and_waveforms_from_peaks(
         rec,
         peaks1,
-        ms_before=1,
-        ms_after=1,
-        job_kwargs=dict(n_jobs=proto_n_jobs, chunk_duration='1s', progress_bar=True)
+        ms_before=proto_ms_before,
+        ms_after=proto_ms_after,
+        job_kwargs=dict(n_jobs=proto_n_jobs, chunk_duration=proto_chunk_duration, progress_bar=True)
+    )
+
+    # detect_threshold here controls how aggressively the matched-filter score
+    # (i.e. how similar a candidate waveform is to the learned prototype) must
+    # clear in order for a peak to be detected in the first place. Lower values
+    # → more permissive (less similar waveforms are still accepted).
+    _matched_filter_detect_threshold = (
+        matched_filter_detect_threshold
+        if matched_filter_detect_threshold is not None
+        else detect_threshold - 0.2
     )
 
     method_kwargs = dict(
-        peak_sign='neg',
-        detect_threshold=detect_threshold - 0.2,
-        exclude_sweep_ms=0.1,
+        peak_sign=matched_filter_peak_sign,
+        detect_threshold=_matched_filter_detect_threshold,
+        exclude_sweep_ms=matched_filter_exclude_sweep_ms,
         prototype=prototype,
-        ms_before=1
+        ms_before=proto_ms_before,
+        radius_um=matched_filter_radius_um,
     )
 
     # Use smaller chunks and fewer workers for matched filtering to avoid memory issues
-    job_kwargs_matched = dict(n_jobs=8, chunk_duration='1s', progress_bar=True)
-    
-    peaks_matched = detect_peaks(
+    job_kwargs_matched = dict(n_jobs=matched_filter_n_jobs, chunk_duration=matched_filter_chunk_duration,
+                               progress_bar=True)
+
+    # Runs the same algorithm as detect_peaks(method='matched_filtering') but
+    # additionally records each peak's matched-filter similarity score (in
+    # units of noise) in the 'matched_filter_score' field, so you can later
+    # inspect the score distribution and retroactively try other values of
+    # matched_filter_detect_threshold without re-running detection.
+    peaks_matched_raw = detect_matched_filtering_peaks_with_score(
         recording=rec,
-        method='matched_filtering',
         method_kwargs=method_kwargs,
+        job_kwargs=job_kwargs_matched,
         verbose=True,
-        job_kwargs=job_kwargs_matched
     )
+    print(f"peaks_matched (pre-amplitude-filter): {len(peaks_matched_raw)}")
+
+    # Recast onto the canonical PEAK_DTYPE so peaks_matched concatenates
+    # cleanly with the threshold-crossing peaks (peaks1/peaks_combined etc.)
+    # further down the pipeline.
+    peaks_matched = np.zeros(len(peaks_matched_raw), dtype=PEAK_DTYPE)
+    for _name in ('sample_index', 'channel_index', 'amplitude', 'segment_index', 'matched_filter_score'):
+        peaks_matched[_name] = peaks_matched_raw[_name]
+    peaks_matched['z'] = peaks_matched_raw['z'].astype(np.int64)
+
+    # ── 6b. Post-hoc amplitude threshold on peaks_matched ─────────────────────
+    # The matched-filter detection pass above does not directly threshold the
+    # waveform amplitude (it thresholds the matched-filter/convolution score).
+    # If matched_amplitude_threshold is set, additionally require the peak's
+    # own amplitude to exceed matched_amplitude_threshold * noise level on its
+    # detection channel before keeping it in peaks_matched.
+    if matched_amplitude_threshold is not None:
+        _chan_noise = noise_levels[peaks_matched['channel_index']]
+        _amp_thresh = -(_chan_noise * matched_amplitude_threshold)
+        _amp_keep = peaks_matched['amplitude'] < _amp_thresh
+        print(f"  Applying matched_amplitude_threshold={matched_amplitude_threshold}: "
+              f"keeping {_amp_keep.sum()} / {len(peaks_matched)} peaks_matched")
+        peaks_matched = peaks_matched[_amp_keep]
+
     print(f"peaks_matched: {len(peaks_matched)}")
     np.save(_file_names["peaks_matched"], peaks_matched)
     print(f"  Saved: {_file_names['peaks_matched']}")
@@ -1032,8 +1102,9 @@ def run_mua_pipeline(
         peaks_combined1, rec, noise_levels,
         sampling_frequency=fs,
         detect_threshold=detect_threshold,
-        support_fraction=0.7,
-        n_required=1,
+        support_fraction=support_fraction,
+        n_required=support_n_required,
+        support_radius=support_radius,
         exclude_sweep_ms=exclude_sweep_ms,
         chunk_size_s=chunk_size_s
     )
@@ -1043,12 +1114,18 @@ def run_mua_pipeline(
 
     # ── 8. Summary ────────────────────────────────────────────────────────────
     print(f"\n✓ All peaks saved to: {save_dir}")
-    print(f"  params.json: computation parameters")
+    print(f"  params.json: computation parameters (all hardcoded/configurable settings)")
     print(f"  peaks0.npy: threshold detections")
     print(f"  peaks1.npy: after spatial/temporal grouping")
     print(f"  peaks2.npy: after spatial support filter")
     print(f"  peaks_matched.npy: matched-filter detections")
     print(f"  peaks_combined1.npy: combined peaks after grouping")
     print(f"  peaks_combined2.npy: final filtered peaks (recommended)")
+    print(f"  All peak arrays carry a 'matched_filter_score' column (similarity to the "
+          f"learned prototype, in units of noise — directly comparable to "
+          f"matched_filter_detect_threshold). NaN for threshold-crossing peaks; a real "
+          f"value for peaks that came from matched filtering, preserved through grouping "
+          f"and spatial-support filtering since the winning representative peak's own row "
+          f"(and its own score) is what gets kept at every step.")
 
     return rec, peaks_combined2, peaks_combined1, peaks_matched, peaks0, peaks1, peaks2

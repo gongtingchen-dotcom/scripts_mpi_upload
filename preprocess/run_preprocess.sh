@@ -35,6 +35,6 @@ conda activate phy2
 # Python path should be passed as environment variable when submitting job
 PYTHON=${PYTHON_PATH:-$(which python)}
 
-python /u/gongt/scripts/preprocess/preprocess_artifact_removal_by_sqr_deviation.py --animal_tag GLC7189 --exp_tag g_g2
+python /u/gongt/scripts/preprocess/preprocess_artifact_removal_by_sqr_deviation.py --animal_tag GLC7248 --exp_tag a_g1
 
 # python /u/gongt/scripts/ironclust.py

@@ -3,11 +3,29 @@
 Peak Localization and Drift Correction Pipeline
 ================================================
 Clean workflow for spike localization, motion correction, and detection integration
+
+TIME WINDOW SUPPORT
+--------------------
+Set TIME_START_S / TIME_END_S below (or via --time_start_s / --time_end_s) to
+restrict the ENTIRE pipeline — detection, localization, motion estimation,
+motion correction — to a sub-window of the recording.
+
+If left as None, the full recording is used (unchanged behaviour).
+
+When a window is set:
+  - The recording is sliced to [TIME_START_S, TIME_END_S) before anything
+    else happens. All detection/localization/motion runs only see this slice.
+  - Every peak's 'sample_index' is immediately shifted back to be relative to
+    the ORIGINAL (unsliced) recording start, so it lines up with full-recording
+    time axes in plots and is comparable across runs with different windows.
+  - The results folder name gets a '_ts<start>_te<end>' suffix so different
+    windows don't collide on disk.
 """
 
 import json
 import numpy as np
 import os
+import shutil
 from pathlib import Path
 import argparse
 import spikeinterface.full as si
@@ -24,9 +42,31 @@ from peak_detect_localise.mua_pipeline import run_mua_pipeline, load_data as loa
 parser = argparse.ArgumentParser(description='Peak Localization and Drift Correction Pipeline')
 parser.add_argument('--mua_detect_threshold', type=float, default=None,
                     help='MUA detection threshold (overrides config value)')
-parser.add_argument('--mua_n_chunks', type=int, default=1,
-                    help='Split the full MUA peak-detection pipeline into this many time chunks (default: 1)')
 parser.add_argument('--base_path', type=str, default=None)
+parser.add_argument('--time_start_s', type=float, default=None,
+                    help='Restrict pipeline to recording time >= this value (seconds). '
+                         'Overrides TIME_START_S in config.')
+parser.add_argument('--time_end_s', type=float, default=None,
+                    help='Restrict pipeline to recording time < this value (seconds). '
+                         'Overrides TIME_END_S in config.')
+parser.add_argument('--support_radius', type=int, default=None,
+                    help='Number of channels to check on each side of a peak channel '
+                         'for the spatial-support check (overrides config value).')
+parser.add_argument('--support_fraction', type=float, default=None,
+                    help='Lowered-threshold fraction (of detect_threshold) a neighbor channel '
+                         'must cross to count as supporting a peak (overrides config value).')
+parser.add_argument('--support_n_required', type=int, default=None,
+                    help='How many of the checked neighbor channels must pass the lowered '
+                         'threshold for a peak to be kept (overrides config value).')
+parser.add_argument('--matched_filter_detect_threshold', type=float, default=None,
+                    help='Detection threshold (in units of noise of the matched-filter/convolution '
+                         'score) used during matched-filtering detection. Lower = more permissive, '
+                         'i.e. a peak does not need to look as similar to the learned prototype to '
+                         'be detected (overrides config value).')
+parser.add_argument('--matched_amplitude_threshold', type=float, default=None,
+                    help='Post-hoc amplitude threshold (in units of noise) applied to peaks_matched '
+                         'after matched-filtering detection. If not set, no extra amplitude '
+                         'filtering is applied to peaks_matched (overrides config value).')
 args = parser.parse_args()
 
 # %%
@@ -37,6 +77,18 @@ args = parser.parse_args()
 # --- Data Paths ---
 BASE_PATH = args.base_path
 PEAKS_FILENAME = "peaks_combined2.npy"  # In BASE_PATH/folder_name/
+
+# --- Time window (None, None = full recording) ---
+TIME_START_S = None   # e.g. 0.0
+TIME_END_S   = None   # e.g. 3600.0
+
+# Command-line overrides for time window
+if args.time_start_s is not None:
+    TIME_START_S = args.time_start_s
+    print(f"Command-line override: time_start_s = {args.time_start_s}")
+if args.time_end_s is not None:
+    TIME_END_S = args.time_end_s
+    print(f"Command-line override: time_end_s = {args.time_end_s}")
 
 # --- Data Source: Choose one mode ---
 USE_TEMP_WH = False  # If True: load from temp_wh.dat (same directory as BASE_PATH)
@@ -55,12 +107,12 @@ MOTION_DIR = None  # Set below, after FOLDER_NAME is determined
 LOAD_COMPUTED_DATA = True  # Set to False to recompute everything
 
 # --- Localization Methods to Run ---
-RUN_MONOPOLAR_TRIANGULATION = False # need to set to true
+RUN_MONOPOLAR_TRIANGULATION = True # need to set to true
 RUN_CENTER_OF_MASS = False
 
 # --- Motion Estimation Methods to Run ---
 RUN_DECENTRALIZED_MOTION = False
-RUN_DREDGE_MOTION = False # need to set to true
+RUN_DREDGE_MOTION = True # need to set to true
 
 # --- Motion Correction (Interpolation) ---
 APPLY_MOTION_CORRECTION = False # need to set to true
@@ -86,20 +138,70 @@ MUA_SETTINGS = {
     "proto_n_jobs":       6,
     "load_computed_data": True,   # reload saved peaks if present
     "rolling_noise_dir":  ROLLING_NOISE_DIR,  # time-varying noise levels (optional)
-    "n_chunks":           1,
+
+    # --- Spatial support filter (neighbor-channel check) ---
+    # A peak is kept if at least support_n_required of the support_radius
+    # channels on each side of the peak channel also cross a lowered
+    # threshold of support_fraction * detect_threshold within the same window.
+    "support_radius":     2,     # how many channels to check on each side
+    "support_fraction":   0.7,   # lowered-threshold fraction of detect_threshold
+    "support_n_required": 1,     # how many of the checked neighbors must pass
+
+    # --- Matched-filter detection (peaks_matched) ---
+    # matched_filter_detect_threshold controls how similar a candidate waveform
+    # must be to the learned prototype (in units of noise of the matched-filter
+    # convolution score) to be detected at all. None -> defaults to
+    # detect_threshold - 0.2 (previous hardcoded behaviour).
+    "matched_filter_detect_threshold": None,
+    # matched_amplitude_threshold is an additional, separate post-hoc filter:
+    # peaks_matched are kept only if their raw amplitude exceeds
+    # matched_amplitude_threshold * noise level on their channel.
+    # None -> no extra amplitude filtering (previous behaviour).
+    "matched_amplitude_threshold": None,
+
+    # --- Matched-filter detection: other knobs (rarely need changing) ---
+    "matched_filter_peak_sign":        "neg",
+    "matched_filter_exclude_sweep_ms": 0.1,
+    "matched_filter_radius_um":        50,
+    "matched_filter_n_jobs":           8,
+    "matched_filter_chunk_duration":   "1s",
+
+    # --- Prototype/waveform extraction (feeds matched filtering) ---
+    "proto_ms_before":     1.0,
+    "proto_ms_after":      1.0,
+    "proto_chunk_duration": "1s",
 }
 
 # Override detect_threshold from command-line if provided
 if args.mua_detect_threshold is not None:
     MUA_SETTINGS["detect_threshold"] = args.mua_detect_threshold
     print(f"Command-line override: mua_detect_threshold = {args.mua_detect_threshold}")
-if args.mua_n_chunks is not None:
-    MUA_SETTINGS["n_chunks"] = args.mua_n_chunks
-    print(f"Command-line override: mua_n_chunks = {args.mua_n_chunks}")
+
+# Override spatial-support and matched-filter settings from command-line if provided
+if args.support_radius is not None:
+    MUA_SETTINGS["support_radius"] = args.support_radius
+    print(f"Command-line override: support_radius = {args.support_radius}")
+if args.support_fraction is not None:
+    MUA_SETTINGS["support_fraction"] = args.support_fraction
+    print(f"Command-line override: support_fraction = {args.support_fraction}")
+if args.support_n_required is not None:
+    MUA_SETTINGS["support_n_required"] = args.support_n_required
+    print(f"Command-line override: support_n_required = {args.support_n_required}")
+if args.matched_filter_detect_threshold is not None:
+    MUA_SETTINGS["matched_filter_detect_threshold"] = args.matched_filter_detect_threshold
+    print(f"Command-line override: matched_filter_detect_threshold = {args.matched_filter_detect_threshold}")
+if args.matched_amplitude_threshold is not None:
+    MUA_SETTINGS["matched_amplitude_threshold"] = args.matched_amplitude_threshold
+    print(f"Command-line override: matched_amplitude_threshold = {args.matched_amplitude_threshold}")
 
 FOLDER_NAME = f"thresholding_peaks_{MUA_SETTINGS['detect_threshold']}"
 if ROLLING_NOISE_DIR is not None:
     FOLDER_NAME += "_rolling"
+# Encode time window in folder name so different windows don't collide on disk
+if TIME_START_S is not None or TIME_END_S is not None:
+    _ts_tag = f"{TIME_START_S:.0f}" if TIME_START_S is not None else "start"
+    _te_tag = f"{TIME_END_S:.0f}"   if TIME_END_S   is not None else "end"
+    FOLDER_NAME += f"_ts{_ts_tag}_te{_te_tag}"
 if BASE_PATH is not None:
     PLOTS_DIR = os.path.join(BASE_PATH, FOLDER_NAME, "plots")
     MOTION_DIR = os.path.join(BASE_PATH, FOLDER_NAME, "motion_estimates")
@@ -219,7 +321,12 @@ def load_or_compute(save_path, compute_fn, load_fn=None, compute_msg="Computing"
 
 def plot_spikes_scatter(peaks, peak_locations, sampling_frequency, ax=None, 
                        t_start=None, t_end=None, title="Peak Depths Over Time", **scatter_kws):
-    """Common scatter plot for peaks over time (used by multiple plot functions)."""
+    """Common scatter plot for peaks over time (used by multiple plot functions).
+
+    NOTE: peaks['sample_index'] is expected to already be relative to the
+    ORIGINAL (unsliced) recording, so t_start/t_end here are in original-
+    recording time, matching SCATTER_WINDOW_S windows etc.
+    """
     if ax is None:
         ax = plt.gca()
     
@@ -260,6 +367,70 @@ def load_data(file_path):
     return load_data_mua(file_path, n_jobs=JOB_KWARGS['n_jobs'])
 
 
+def slice_recording_to_window(rec, time_start_s, time_end_s):
+    """Slice a recording to [time_start_s, time_end_s) in seconds.
+
+    Returns (rec_sliced, start_frame). start_frame is the frame offset of the
+    slice within the ORIGINAL recording — add it back onto any sample_index
+    computed on the sliced recording to recover original-recording sample
+    indices.
+
+    If both time_start_s and time_end_s are None, returns (rec, 0) unchanged.
+    """
+    if time_start_s is None and time_end_s is None:
+        return rec, 0
+
+    fs = rec.sampling_frequency
+    total_duration = rec.get_total_duration()
+
+    start_frame = int(round((time_start_s or 0.0) * fs))
+    end_frame = (int(round(time_end_s * fs))
+                if time_end_s is not None
+                else rec.get_num_frames())
+
+    start_frame = max(0, min(start_frame, rec.get_num_frames()))
+    end_frame = max(start_frame, min(end_frame, rec.get_num_frames()))
+
+    print(f"  Slicing recording to frames [{start_frame}, {end_frame})  "
+          f"=  time [{start_frame/fs:.2f}s, {end_frame/fs:.2f}s)  "
+          f"out of {total_duration:.2f}s total")
+
+    rec_sliced = rec.frame_slice(start_frame=start_frame, end_frame=end_frame)
+    return rec_sliced, start_frame
+
+
+def shift_peaks_to_original_time(peaks, start_frame):
+    """Shift peaks['sample_index'] by start_frame so it is relative to the
+    ORIGINAL (unsliced) recording rather than the slice.
+
+    No-op (returns peaks unchanged) if start_frame == 0.
+    Operates on a copy; does not mutate the input array.
+    """
+    if start_frame == 0:
+        return peaks
+    peaks = peaks.copy()
+    peaks['sample_index'] = peaks['sample_index'] + start_frame
+    return peaks
+
+
+def materialize_sliced_recording_for_mua(rec_sliced, base_path, folder_name, n_jobs):
+    """run_mua_pipeline takes a bin_path (string) and reloads from disk
+    internally, so an in-memory sliced recording can't be passed directly.
+    When a time window is active, save the slice to a temp folder under
+    base_path/folder_name/_sliced_recording so run_mua_pipeline can load it,
+    and return that path as the bin_path to use.
+    """
+    sliced_path = os.path.join(base_path, folder_name, "_sliced_recording")
+    if os.path.exists(sliced_path):
+        print(f"  Using existing sliced recording at: {sliced_path}")
+        return sliced_path
+    print(f"  Saving sliced recording to: {sliced_path}")
+    os.makedirs(os.path.dirname(sliced_path), exist_ok=True)
+    rec_sliced.save_to_folder(sliced_path, overwrite=False, n_jobs=n_jobs)
+    print("  Sliced recording saved.")
+    return sliced_path
+
+
 def save_scatter_pair(peaks, locations, sampling_frequency, total_duration,
                       title_base, save_prefix):
     """Save two drift scatter plots: first and last SCATTER_WINDOW_S seconds."""
@@ -295,6 +466,10 @@ if __name__ == "__main__":
         print(f"Using preprocessed folder mode")
         print(f"  Recording: {BIN_PATH}")
     print(f"All outputs will be saved to: {BASE_PATH}\n")
+    if TIME_START_S is not None or TIME_END_S is not None:
+        print(f"TIME WINDOW ACTIVE: [{TIME_START_S}, {TIME_END_S})  (None = recording start/end)\n")
+    else:
+        print("TIME WINDOW: full recording\n")
     
     # %%
     # =============================================================================
@@ -307,21 +482,45 @@ if __name__ == "__main__":
     
     # Load base recording from BIN_PATH (either preprocessed folder or temp_wh.dat)
     print(f"\nLoading recording from: {BIN_PATH}")
-    rec_original = load_data(BIN_PATH)
-    print(f"Recording loaded: {rec_original}")
-    print(f"  Duration: {rec_original.get_total_duration():.2f} s")
-    print(f"  Sampling rate: {rec_original.sampling_frequency} Hz")
-    print(f"  Channels: {rec_original.get_num_channels()}")
+    rec_full = load_data(BIN_PATH)
+    print(f"Recording loaded: {rec_full}")
+    print(f"  Duration: {rec_full.get_total_duration():.2f} s")
+    print(f"  Sampling rate: {rec_full.sampling_frequency} Hz")
+    print(f"  Channels: {rec_full.get_num_channels()}")
+
+    # --- Apply time window slice (if set) ---
+    # rec_original is what everything downstream uses. TIME_WINDOW_START_FRAME
+    # is the frame offset of this slice within the original, full recording —
+    # add it back onto any sample_index computed from rec_original to recover
+    # original-recording-relative sample indices.
+    rec_original, TIME_WINDOW_START_FRAME = slice_recording_to_window(
+        rec_full, TIME_START_S, TIME_END_S
+    )
+    if TIME_WINDOW_START_FRAME != 0 or TIME_START_S is not None or TIME_END_S is not None:
+        print(f"  Sliced recording duration: {rec_original.get_total_duration():.2f} s")
+        print(f"  Time window start frame (offset into original recording): {TIME_WINDOW_START_FRAME}")
     
     # Load or generate peaks
     if RUN_MUA_PIPELINE:
         print(f"\nRunning mua_pipeline on original recording to detect peaks...")
-        _, peaks_original, *_ = run_mua_pipeline(bin_path=BIN_PATH, folder_name=FOLDER_NAME, **MUA_SETTINGS)
+        if TIME_WINDOW_START_FRAME != 0 or TIME_START_S is not None or TIME_END_S is not None:
+            # run_mua_pipeline takes a bin_path and reloads from disk, so we
+            # need to materialize the sliced recording to disk first.
+            _mua_bin_path = materialize_sliced_recording_for_mua(
+                rec_original, BASE_PATH, FOLDER_NAME, n_jobs=MUA_SETTINGS.get('n_jobs', 6)
+            )
+        else:
+            _mua_bin_path = BIN_PATH
+        _, peaks_original, *_ = run_mua_pipeline(bin_path=_mua_bin_path, folder_name=FOLDER_NAME, **MUA_SETTINGS)
+        # Shift sample_index back to be relative to the ORIGINAL (unsliced) recording
+        peaks_original = shift_peaks_to_original_time(peaks_original, TIME_WINDOW_START_FRAME)
     else:
         peaks_path = Path(BASE_PATH) / FOLDER_NAME / PEAKS_FILENAME
         print(f"\nLoading cached peaks from: {peaks_path}")
         peaks_original = np.load(peaks_path)
         print(f"  Loaded {len(peaks_original):,} peaks")
+        # NOTE: cached peaks are assumed to already be in original-recording
+        # time (i.e. were saved after the shift above on a previous run).
     _sorted_path = Path(BASE_PATH) / FOLDER_NAME / (Path(PEAKS_FILENAME).stem + "_sorted.npy")
     if not _sorted_path.exists():
         print(f"  Sorting peaks and saving to {_sorted_path} ...")
@@ -343,13 +542,21 @@ if __name__ == "__main__":
     # --- Monopolar Triangulation ---
     if RUN_MONOPOLAR_TRIANGULATION:
         save_path = os.path.join(BASE_PATH, FOLDER_NAME, "localized_peaks_mt_raw.npy")
-        
+
+        # localize_peaks needs peaks['sample_index'] relative to rec_original
+        # (the sliced recording), but peaks_original is in ORIGINAL-recording
+        # time. Shift back to slice-relative time for this call only.
+        _peaks_for_localization = peaks_original.copy()
+        _peaks_for_localization['sample_index'] = (
+            _peaks_for_localization['sample_index'] - TIME_WINDOW_START_FRAME
+        )
+
         print("\nComputing Monopolar Triangulation localization...")
         peak_locations_mt_original, was_loaded = load_or_compute(
             save_path,
             compute_fn=lambda: localize_peaks(
                 recording=rec_original,
-                peaks=peaks_original,
+                peaks=_peaks_for_localization,
                 method='monopolar_triangulation',
                 **LOCALIZATION_PARAMS['monopolar_triangulation'],
                 **JOB_KWARGS
@@ -386,13 +593,18 @@ if __name__ == "__main__":
     # --- Center of Mass ---
     if RUN_CENTER_OF_MASS:
         save_path = os.path.join(BASE_PATH, FOLDER_NAME, "localized_peaks_cm_raw.npy")
-        
+
+        _peaks_for_localization = peaks_original.copy()
+        _peaks_for_localization['sample_index'] = (
+            _peaks_for_localization['sample_index'] - TIME_WINDOW_START_FRAME
+        )
+
         print("\nComputing Center of Mass localization...")
         peak_locations_cm_original, was_loaded = load_or_compute(
             save_path,
             compute_fn=lambda: localize_peaks(
                 recording=rec_original,
-                peaks=peaks_original,
+                peaks=_peaks_for_localization,
                 method='center_of_mass',
                 **LOCALIZATION_PARAMS['center_of_mass'],
                 **JOB_KWARGS
@@ -421,9 +633,17 @@ if __name__ == "__main__":
         chan_start,
         chan_end,
         labels=None,
-        save_path=None
+        save_path=None,
+        time_offset_frames=0
     ):
-        """Plot localized peaks overlaid on raw traces with depth labels."""
+        """Plot localized peaks overlaid on raw traces with depth labels.
+
+        peaks['sample_index'] is assumed to be relative to the ORIGINAL
+        recording. time_offset_frames is subtracted to recover the frame
+        index within `rec` (which may itself be a slice), and t_start/t_end
+        are interpreted in ORIGINAL-recording time for consistency with the
+        rest of the pipeline's plots.
+        """
         
         COLORS = [
             '#e6194b', '#4363d8', '#3cb44b', '#f58231', '#911eb4',
@@ -441,9 +661,12 @@ if __name__ == "__main__":
         chan_locs = rec.get_channel_locations(channel_ids=chan_ids_to_plot)
         y_depths = chan_locs[:, 1] 
     
-        # Extract Data
-        start_frame = int(t_start * fs)
-        end_frame = int(t_end * fs)
+        # Extract Data — t_start/t_end are in ORIGINAL time; convert to frames
+        # within `rec` (subtract the slice offset).
+        start_frame_orig = int(t_start * fs)
+        end_frame_orig = int(t_end * fs)
+        start_frame = start_frame_orig - time_offset_frames
+        end_frame = end_frame_orig - time_offset_frames
         traces = rec.get_traces(start_frame=start_frame, end_frame=end_frame, channel_ids=chan_ids_to_plot)
         time_axis = np.linspace(t_start, t_end, traces.shape[0])
     
@@ -461,6 +684,7 @@ if __name__ == "__main__":
             plt.plot(time_axis, traces[:, i] + offsets[i], color='black', lw=0.5)
     
         # Map Localization Dots onto the Stacked Plot
+        # peaks['sample_index'] is in ORIGINAL time, matching t_start/t_end here.
         p_times = peaks['sample_index'] / fs
         time_mask = (p_times >= t_start) & (p_times <= t_end)
         chan_mask = (peaks['channel_index'] >= chan_start) & (peaks['channel_index'] < chan_end)
@@ -497,7 +721,7 @@ if __name__ == "__main__":
         plt.grid(axis='x', alpha=0.1)
         plt.legend(loc='upper right', markerscale=2)
         plt.tight_layout()
-    
+        
         if save_path is not None:
             plt.savefig(save_path, dpi=PLOT_DPI, bbox_inches='tight')
             print(f"  Plot saved to: {save_path}")
@@ -517,7 +741,8 @@ if __name__ == "__main__":
             t_end=WAVEFORM_PLOT_TIME['t_end'],
             chan_start=WAVEFORM_PLOT_CHANNELS['chan_start'],
             chan_end=WAVEFORM_PLOT_CHANNELS['chan_end'],
-            save_path=save_path
+            save_path=save_path,
+            time_offset_frames=TIME_WINDOW_START_FRAME
         )
     
     # %%
@@ -556,7 +781,7 @@ if __name__ == "__main__":
         print("\nPlotting drift scatter (Monopolar Triangulation - Original)...")
         save_scatter_pair(
             peaks_original, peak_locations_mt_original,
-            rec_original.sampling_frequency, rec_original.get_total_duration(),
+            rec_original.sampling_frequency, rec_full.get_total_duration(),
             title_base="Monopolar Triangulation: Peak Depths Over Time (Original)",
             save_prefix=os.path.join(PLOTS_DIR, "03_drift_scatter_mt_original"),
         )
@@ -565,7 +790,7 @@ if __name__ == "__main__":
         print("\nPlotting drift scatter (Center of Mass - Original)...")
         save_scatter_pair(
             peaks_original, peak_locations_cm_original,
-            rec_original.sampling_frequency, rec_original.get_total_duration(),
+            rec_original.sampling_frequency, rec_full.get_total_duration(),
             title_base="Center of Mass: Peak Depths Over Time (Original)",
             save_prefix=os.path.join(PLOTS_DIR, "04_drift_scatter_cm_original"),
         )
@@ -578,6 +803,13 @@ if __name__ == "__main__":
     print("\n" + "="*80)
     print("MOTION ESTIMATION")
     print("="*80)
+
+    # estimate_motion needs peaks relative to rec_original (the slice), so
+    # build a slice-relative copy for this section.
+    _peaks_for_motion = peaks_original.copy()
+    _peaks_for_motion['sample_index'] = (
+        _peaks_for_motion['sample_index'] - TIME_WINDOW_START_FRAME
+    )
     
     # --- Decentralized Motion (requires MT peak locations) ---
     if RUN_DECENTRALIZED_MOTION:
@@ -591,7 +823,7 @@ if __name__ == "__main__":
                 save_path,
                 compute_fn=lambda: estimate_motion(
                     recording=rec_original,
-                    peaks=peaks_original,
+                    peaks=_peaks_for_motion,
                     peak_locations=peak_locations_mt_original,
                     method="decentralized",
                     progress_bar=True,
@@ -622,7 +854,7 @@ if __name__ == "__main__":
                 save_path,
                 compute_fn=lambda: estimate_motion(
                     recording=rec_original,
-                    peaks=peaks_original,
+                    peaks=_peaks_for_motion,
                     peak_locations=peak_locations_mt_original,
                     method="dredge_ap",
                     progress_bar=True,
@@ -657,6 +889,11 @@ if __name__ == "__main__":
 
         colors is optional: if None, colours are auto-assigned from a palette.
         Title adapts: single method shows the method name, multiple shows 'comparison'.
+
+        NOTE: peaks['sample_index'] is in ORIGINAL-recording time, and
+        motion_obj.temporal_bins_s is in slice-relative time, so time_offset
+        (the original recording's get_times()[0] PLUS the slice start time)
+        is used to align them — same convention as the non-windowed pipeline.
         """
         active = [(i, m) for i, m in enumerate(motion_list) if m is not None]
         n_active = len(active)
@@ -729,8 +966,12 @@ if __name__ == "__main__":
 
         if len(motion_list) > 0:
             print(f"\nPlotting motion {'overlay' if len(motion_list) == 1 else 'comparison'} ({', '.join(motion_labels)})...")
-            time_offset = rec_original.get_times()[0]
-            t_total = rec_original.get_total_duration()
+            # rec_original.get_times()[0] gives the slice-relative t0 of the
+            # sliced recording (typically 0); add the slice's start time in
+            # seconds (TIME_WINDOW_START_FRAME / fs) to express motion bins
+            # in ORIGINAL-recording time, matching peaks_original.
+            time_offset = rec_original.get_times()[0] - (TIME_WINDOW_START_FRAME / rec_original.sampling_frequency)
+            t_total = rec_full.get_total_duration()
             for _label, _t0, _t1 in [
                 ("start", 0.0,                             min(SCATTER_WINDOW_S, t_total)),
                 ("end",   max(0.0, t_total - SCATTER_WINDOW_S), t_total),
@@ -776,7 +1017,7 @@ if __name__ == "__main__":
             print(f"Enable RUN_{CORRECTION_METHOD.upper()}_MOTION in config.")
             rec_corrected = None
         else:
-            save_path = os.path.join(BASE_PATH, f"rec_corrected_{CORRECTION_METHOD}")
+            save_path = os.path.join(BASE_PATH, FOLDER_NAME, f"rec_corrected_{CORRECTION_METHOD}")
             
             if LOAD_COMPUTED_DATA and os.path.exists(save_path):
                 print(f"\nLoading precomputed corrected recording ({method_name})...")
@@ -806,7 +1047,7 @@ if __name__ == "__main__":
         print("="*80)
     
         # mua_pipeline saves peaks into <bin_path>/thresholding_peaks/ — use the corrected recording folder
-        corrected_rec_path = os.path.join(BASE_PATH, f"rec_corrected_{CORRECTION_METHOD}")
+        corrected_rec_path = os.path.join(BASE_PATH, FOLDER_NAME, f"rec_corrected_{CORRECTION_METHOD}")
         peaks_corrected_path = os.path.join(corrected_rec_path, FOLDER_NAME, "peaks_combined2.npy")
     
         if LOAD_COMPUTED_DATA and os.path.exists(peaks_corrected_path):
@@ -823,6 +1064,9 @@ if __name__ == "__main__":
             )
             peaks_corrected = np.sort(peaks_corrected, order='sample_index')
             print(f"  Peaks saved by mua_pipeline to: {peaks_corrected_path}")
+
+        # Shift re-detected peaks back to ORIGINAL-recording time as well
+        peaks_corrected = shift_peaks_to_original_time(peaks_corrected, TIME_WINDOW_START_FRAME)
     
         print(f"  Re-detected peaks: {len(peaks_corrected):,}")
         print(f"  Original peaks:    {len(peaks_original):,}")
@@ -850,8 +1094,16 @@ if __name__ == "__main__":
         print("="*80)
         
         # Re-run monopolar triangulation on corrected data
-        save_path = os.path.join(BASE_PATH, f"rec_corrected_{CORRECTION_METHOD}", 
+        save_path = os.path.join(BASE_PATH, FOLDER_NAME, f"rec_corrected_{CORRECTION_METHOD}", 
                                 "localized_peaks_mt_corrected.npy")
+
+        # peaks_corrected is in ORIGINAL-recording time; shift to slice-relative
+        # time for the localize_peaks call against rec_corrected (which is the
+        # same length/offset as rec_original, the slice).
+        _peaks_corrected_for_localization = peaks_corrected.copy()
+        _peaks_corrected_for_localization['sample_index'] = (
+            _peaks_corrected_for_localization['sample_index'] - TIME_WINDOW_START_FRAME
+        )
         
         if LOAD_COMPUTED_DATA and os.path.exists(save_path):
             print(f"\nLoading precomputed localization on corrected data...")
@@ -861,7 +1113,7 @@ if __name__ == "__main__":
             print(f"\nRe-localizing peaks on corrected recording...")
             peak_locations_mt_corrected = localize_peaks(
                 recording=rec_corrected,
-                peaks=peaks_corrected,
+                peaks=_peaks_corrected_for_localization,
                 method='monopolar_triangulation',
                 **LOCALIZATION_PARAMS['monopolar_triangulation'],
                 **JOB_KWARGS
@@ -891,7 +1143,7 @@ if __name__ == "__main__":
         print(f"\nPlotting drift after {CORRECTION_METHOD} correction...")
         save_scatter_pair(
             peaks_corrected, peak_locations_mt_corrected,
-            rec_corrected.sampling_frequency, rec_corrected.get_total_duration(),
+            rec_corrected.sampling_frequency, rec_full.get_total_duration(),
             title_base=f"After {CORRECTION_METHOD.capitalize()} Correction: Peak Depths Over Time",
             save_prefix=os.path.join(PLOTS_DIR, f"06_drift_scatter_corrected_{CORRECTION_METHOD}"),
         )
@@ -908,13 +1160,14 @@ if __name__ == "__main__":
             t_end=WAVEFORM_PLOT_TIME['t_end'],
             chan_start=WAVEFORM_PLOT_CHANNELS['chan_start'],
             chan_end=WAVEFORM_PLOT_CHANNELS['chan_end'],
-            save_path=save_path
+            save_path=save_path,
+            time_offset_frames=TIME_WINDOW_START_FRAME
         )
         
         # Comparison: Before vs After correction
         if peak_locations_mt_original is not None and REDETECT_PEAKS_AFTER_CORRECTION:
             print("\nPlotting before/after comparison...")
-            t_total = rec_original.get_total_duration()
+            t_total = rec_full.get_total_duration()
             for _label, _t0, _t1 in [
                 ("start", 0.0,                             min(SCATTER_WINDOW_S, t_total)),
                 ("end",   max(0.0, t_total - SCATTER_WINDOW_S), t_total),
@@ -950,7 +1203,12 @@ if __name__ == "__main__":
     print("\n[INPUT DATA]")
     print(f"  Recording: {BASE_PATH}")
     print(f"  Sampling rate: {rec_original.sampling_frequency} Hz")
-    print(f"  Duration: {rec_original.get_total_duration():.1f} s")
+    print(f"  Full recording duration: {rec_full.get_total_duration():.1f} s")
+    if TIME_START_S is not None or TIME_END_S is not None:
+        print(f"  Time window applied: [{TIME_START_S}, {TIME_END_S})  "
+              f"(sliced duration: {rec_original.get_total_duration():.1f} s)")
+    else:
+        print(f"  Time window: full recording")
     
     print("\n[SPIKE DETECTION]")
     print(f"  Original peaks: {len(peaks_original):,}")
@@ -961,12 +1219,12 @@ if __name__ == "__main__":
     
     print("\n[LOCALIZATION (Original Data) — SAVED]")
     if peak_locations_mt_original is not None:
-        mt_save = os.path.join(BASE_PATH, "localized_peaks_mt_raw.npy")
+        mt_save = os.path.join(BASE_PATH, FOLDER_NAME, "localized_peaks_mt_raw.npy")
         print(f"  ✓ Monopolar Triangulation: {mt_save}")
         print(f"    {len(peak_locations_mt_original):,} peaks, "
               f"depth range: {peak_locations_mt_original['y'].min():.1f}–{peak_locations_mt_original['y'].max():.1f} µm")
     if peak_locations_cm_original is not None:
-        cm_save = os.path.join(BASE_PATH, "localized_peaks_cm_raw.npy")
+        cm_save = os.path.join(BASE_PATH, FOLDER_NAME, "localized_peaks_cm_raw.npy")
         print(f"  ✓ Center of Mass: {cm_save}")
         print(f"    {len(peak_locations_cm_original):,} peaks, "
               f"depth range: {peak_locations_cm_original['y'].min():.1f}–{peak_locations_cm_original['y'].max():.1f} µm")
@@ -987,7 +1245,7 @@ if __name__ == "__main__":
     
     print("\n[MOTION CORRECTION — SAVED]")
     if rec_corrected is not None:
-        corr_dir = os.path.join(BASE_PATH, f"rec_corrected_{CORRECTION_METHOD}")
+        corr_dir = os.path.join(BASE_PATH, FOLDER_NAME, f"rec_corrected_{CORRECTION_METHOD}")
         print(f"  ✓ Method: {CORRECTION_METHOD.capitalize()}")
         print(f"  ✓ Recording: {corr_dir}")
         

@@ -17,6 +17,11 @@
 # Scrambled data is saved per-shuffle so analyse_shuffles.py can reconstruct
 # exactly what was fed to the decoder.
 #
+# decode_pipeline is fed the FULL scrambled valid-trial set (train+test) plus
+# the fixed train_idx_fixed/test_idx_fixed split (same fix as shuffle_all) —
+# its internal Ridge baseline needs a non-empty test split to run. GMM/GLM/
+# ADVI still only ever see scrambled data, computed from scratch per shuffle.
+#
 # SLURM array: sbatch run_scramble_array.sh
 # (same pattern as neural shuffle — submit one index per job)
 
@@ -545,21 +550,27 @@ for _shuf_i in _run_indices:
         bin_tmi_all_s = bin_tmi_v
         bin_beh_all_s = _scramble_behavior_bins(bin_beh_v, perm)
 
-    # ── step 2: subset scrambled arrays to training trials only ───────────────
-    # Only training trials enter decode_pipeline — GMM init, GLM init, and ADVI
-    # all see the same data: training trials, scrambled. No symlinks, no reuse
-    # of checkpoints from the real run; everything is computed from scratch.
-    bin_sf_feed  = [bin_sf_all_s[k] for k in train_idx_fixed]
-    bin_ti_feed  = []
-    bin_tmi_feed = []
-    for new_k, orig_k in enumerate(train_idx_fixed):
-        for t in range(N_T_BINS):
-            bin_ti_feed.append(np.full_like(bin_ti_all_s[orig_k * N_T_BINS + t], new_k))
-            bin_tmi_feed.append(bin_tmi_all_s[orig_k * N_T_BINS + t])
-    bin_beh_feed = bin_beh_all_s[train_idx_fixed].copy()  # (n_train, n_t), scrambled
+    # ── step 2: feed decode_pipeline the FULL scrambled valid-trial set ───────
+    # (matches the shuffle_all fix) — decode_pipeline gets ALL n_valid trials
+    # (scrambled) plus the real train_idx_fixed/test_idx_fixed indices into
+    # that set. decode_pipeline's own internal generic_decoder step needs a
+    # non-empty test split to run its Ridge baseline check; giving it the real
+    # split (still scrambled data, still no leakage of the REAL behaviour/
+    # spikes) satisfies that without us hand-rolling a pseudo split. GMM init,
+    # GLM init, and ADVI all still see only scrambled data — no symlinks, no
+    # reuse of checkpoints from the real run; everything is computed from
+    # scratch. train_idx_fixed/test_idx_fixed are the SAME fixed split used
+    # for every shuffle and for the real run.
+    bin_sf_feed  = bin_sf_all_s
+    bin_ti_feed  = bin_ti_all_s
+    bin_tmi_feed = bin_tmi_all_s
+    bin_beh_feed = bin_beh_all_s                    # (n_valid, n_t), scrambled
 
-    _n_train_s  = len(train_idx_fixed)
-    train_idx_s = np.arange(_n_train_s)            # 0..n_train-1
+    if len(train_idx_fixed) == 0 or len(test_idx_fixed) == 0:
+        print(f"  [WARN] Empty train or test — skipping.")
+        continue
+
+    _n_train_s = len(train_idx_fixed)
 
     # ── diagnostic plot (first 5 training trials) ─────────────────────────────
     _diag_path = os.path.join(_shuf_dir,
@@ -573,8 +584,8 @@ for _shuf_i in _run_indices:
             bin_beh_orig       = bin_beh_v,
             bin_sf_feed        = bin_sf_feed,
             bin_beh_feed       = bin_beh_feed,
-            train_idx          = train_idx_s,
-            trial_starts_valid = trial_starts_valid[train_idx_fixed],
+            train_idx          = train_idx_fixed,
+            trial_starts_valid = trial_starts_valid,
             spike_t_gate_local = spike_t_gate,
             z_corr_local       = z_corr_plot,
             n_t                = N_T_BINS,
@@ -658,9 +669,10 @@ for _shuf_i in _run_indices:
                      daemon=True).start()
 
     # ── decode_pipeline ───────────────────────────────────────────────────────
-    # bin_sf_feed / bin_ti_feed / bin_tmi_feed / bin_beh_feed are training-only
-    # and scrambled. GMM init, GLM init, and ADVI all receive exactly these
-    # arrays — no test-trial data, no reused checkpoints.
+    # bin_sf_feed / bin_ti_feed / bin_tmi_feed / bin_beh_feed cover ALL n_valid
+    # trials (scrambled). train_idx_fixed/test_idx_fixed are the real, fixed
+    # split indexing into that full set. GMM init, GLM init, and ADVI all see
+    # only scrambled data — no reused checkpoints, everything from scratch.
     _batch_size_s = min(_args.batch_size, max(1, _n_train_s))
 
     weight_matrix_s = decode_pipeline(
@@ -670,8 +682,8 @@ for _shuf_i in _run_indices:
         bin_tmi_feed,
         bin_behaviors    = bin_beh_feed,
         behavior_type    = "continuous",
-        train            = train_idx_s,            # 0..n_train-1
-        test             = np.array([], dtype=np.int64),  # no test inside pipeline
+        train            = train_idx_fixed,
+        test             = test_idx_fixed,
         learning_rate    = LEARNING_RATE,
         device           = device,
         n_workers        = N_WORKERS,
@@ -689,14 +701,22 @@ for _shuf_i in _run_indices:
     # step 1 above). We evaluate the decoder on scrambled test data — that is
     # the correct null: can the decoder trained on scrambled train data predict
     # scrambled test behaviour?
+    #
+    # decode_pipeline returns rows only for trials referenced by train/test.
+    # With interleaved chunking, leftover tail trials are dropped from split,
+    # so bin_beh_all_s can be longer than weight_matrix_s. Align here (same
+    # fix as shuffle_all).
     _n_wm_s = weight_matrix_s.shape[0]
-    assert _n_wm_s == _n_train_s, (
-        f"weight_matrix row count {_n_wm_s} != n_train {_n_train_s}; "
-        "check decode_pipeline output shape."
-    )
+    eval_train_idx = train_idx_fixed[train_idx_fixed < _n_wm_s]
+    eval_test_idx  = test_idx_fixed[test_idx_fixed < _n_wm_s]
+    if len(eval_train_idx) == 0 or len(eval_test_idx) == 0:
+        raise ValueError(
+            f"Empty eval split after alignment: n_wm={_n_wm_s}, "
+            f"train={len(eval_train_idx)}, test={len(eval_test_idx)}")
+
     _, obs_s, pred_s, metrics_s = sliding_window_decoder(
-        weight_matrix_s, bin_beh_all_s,            # scrambled beh, all n_valid trials
-        train_idx_fixed, test_idx_fixed,
+        weight_matrix_s, bin_beh_all_s[:_n_wm_s],  # scrambled beh, aligned
+        eval_train_idx, eval_test_idx,
         behavior_type="continuous", verbose=False,
     )
 
@@ -709,8 +729,10 @@ for _shuf_i in _run_indices:
         _shuf_done,
         obs_test      = obs_s,
         pred_test     = pred_s,
-        train_idx     = train_idx_fixed,
-        test_idx      = test_idx_fixed,
+        train_idx     = eval_train_idx,
+        test_idx      = eval_test_idx,
+        train_idx_global = train_idx_fixed,
+        test_idx_global  = test_idx_fixed,
         weight_matrix = weight_matrix_s,
         scramble_perm = perm,
         scramble_mode = np.bytes_(SCRAMBLE_MODE),
@@ -742,7 +764,9 @@ for _shuf_i in _run_indices:
         "r2":                   float(metrics_s['r2']),
         "r":                    float(metrics_s['corr']),
         "elapsed_sec":          float(_t_elapsed),
-        "note":                 "r2/r vs REAL (unscrambled) behaviour",
+        "note":                 ("r2/r: SCRAMBLED spikes vs REAL behaviour"
+                                 if SCRAMBLE_MODE == 'neural' else
+                                 "r2/r: REAL spikes vs SCRAMBLED behaviour"),
         "timestamp":            datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
     }
     with open(os.path.join(_shuf_dir,

@@ -65,7 +65,7 @@ _ap.add_argument('--chunk_style',   choices=['contiguous', 'interleaved'], defau
                  help='Train/test split style: contiguous (80-20 at end) or interleaved (distributed, default)')
 _ap.add_argument('--test_percentage', type=float, default=20,
                  help='Percentage of data to use for testing (default 20, range 1-99)')
-_ap.add_argument('--chunk_size',    type=int,   default=50,
+_ap.add_argument('--chunk_size',    type=int,   default=10,
                  help='Trials per chunk for interleaved train/test split (default 50); '
                       'only used when chunk_style=interleaved')
 _ap.add_argument('--early_stopping', action=_argparse.BooleanOptionalAction, default=True,
@@ -135,7 +135,7 @@ RESULTS_DIR = os.path.join(
     "density_decoding",
     f"{_beh_key_dir}_{_args.bin_size_ms:.3g}ms_{_args.t_trial:.3g}s_{_args.chunk_style}_"
     f"{'zscoreboth' if _args.zscore_spike_features else 'nozscore'}_embargo{_args.embargo_trials}"
-    f"{_speedgate_tag}{_selected_tag}{_demean_tag}"
+    f"{_speedgate_tag}{_selected_tag}{_demean_tag}_chunksize{_args.chunk_size}"
 )
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
