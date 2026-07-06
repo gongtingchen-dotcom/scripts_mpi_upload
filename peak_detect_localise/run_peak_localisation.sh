@@ -40,9 +40,10 @@ export PYTHONPATH="/u/gongt/scripts:$PYTHONPATH"
 PYTHON=${PYTHON_PATH:-$(which python)}
 
 python /u/gongt/scripts/peak_detect_localise/peak_localisation.py \
-    --mua_detect_threshold 3.6 \
-    --base_path /nexus/posix0/MBR-neuralsystems/ephys/GLC7247/preprocessed \
-    --support_radius 4 \
+    --mua_detect_threshold 3.5 \
+    --base_path /nexus/posix0/MBR-neuralsystems/ephys/GLC7248/GLC7248_a_g1/preprocessed \
+    --support_radius 3 \
     --support_fraction 0.8 \
-    --support_n_required 5 \
-    --matched_amplitude_threshold 3
+    --support_n_required 3 \
+    --matched_amplitude_threshold 3 \
+    --time_start_s 5600 \

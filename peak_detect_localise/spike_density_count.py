@@ -18,8 +18,13 @@ motion object, then produces up to four plot groups:
   If PEAK_LOCS_PATH is set (or default file found):
   2.  Raw scatter + motion overlay  — 3 user-chosen windows
   3.  Motion-corrected scatter  — same 3 windows
-  4.  Snapped scatter + channel density histograms (depth-ordered & id-ordered)
-      + 4x96 regularized grid map with deleted channels marked black with red lines.
+  4.  Channel density / RMS / sorted-unit-rate grid map (2 columns x
+      exact-depth rows) + a slim per-depth spike-rate strip. Deleted
+      channels (missing from the recording, cross-checked against
+      probe.json) are only marked black/red in the noise-RMS panel, since
+      that's the only quantity directly tied to a channel's own signal.
+      Density and sorted-unit snapping are free to land on any nearest
+      channel regardless of deletion status.
 
 If MOTION_DIR is None, no motion loading or correction is performed; all
 motion-related sections treat displacement as zero (i.e. corrected = raw).
@@ -35,26 +40,29 @@ from pathlib import Path
 import os
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
-BASE_PATH      = r"/nexus/posix0/MBR-neuralsystems/ephys/GLC7248/GLC7248_a_g3/preprocessed"
-PEAKS_DIR      = r"/nexus/posix0/MBR-neuralsystems/ephys/GLC7248/GLC7248_a_g3/preprocessed/thresholding_peaks_3.5"
+BASE_PATH      = r"/nexus/posix0/MBR-neuralsystems/ephys/GLC7248/GLC7248_a_g1/preprocessed"
+PEAKS_DIR      = r"/nexus/posix0/MBR-neuralsystems/ephys/GLC7248/GLC7248_a_g1/preprocessed/thresholding_peaks_3.5_ts5600_teend/_sliced_recording/thresholding_peaks_3.5_ts5600_teend"
+# PEAKS_DIR      = os.path.join(BASE_PATH, "thresholding_peaks_3.5_ts5600_teend")
                  # if None → BASE_PATH / "thresholding_peaks"
 
-PEAK_LOCS_PATH = r"/nexus/posix0/MBR-neuralsystems/ephys/GLC7248/GLC7248_a_g3/preprocessed/thresholding_peaks_3.5/localized_peaks_mt_raw.npy"
+PEAK_LOCS_PATH = os.path.join(PEAKS_DIR, "localized_peaks_mt_raw.npy")
                  # Path to localized_peaks_mt_raw.npy.
                  # If None → PEAKS_DIR / "localized_peaks_mt_raw.npy" is tried;
                  # if that also doesn't exist, sections 2–4 are skipped entirely.
 
-MOTION_DIR     = r"/nexus/posix0/MBR-neuralsystems/ephys/GLC7248/GLC7248_a_g3/preprocessed/thresholding_peaks_3.5/motion_estimates/motion_dredge"
+MOTION_DIR     = os.path.join(PEAKS_DIR, "motion_estimates/motion_dredge")
                  # Path to SpikeInterface motion object folder.
                  # Set to None to skip motion loading/correction (displacement = 0).
 
 PLOTS_DIR      = os.path.join(PEAKS_DIR, "spike_density_plots_3.5motion")   # if None → PEAKS_DIR / "spike_density_plots"
 
+CLUSTERS_PATH  = r"/nexus/posix0/MBR-neuralsystems/ephys/GLC7248/GLC7248_a_g1/GLC7248_a_g1_imec0/20260625_clusters.npz"
+
 # ── Section 1: Waveform snippet windows ──────────────────────────────────────
 WAVEFORM_WINDOWS = [
-    {"plot_start_s": 100, "channel_start": 0, "plot_duration": 0.05, "channel_end": 384},
-    {"plot_start_s": 1100,  "channel_start": 0, "plot_duration": 0.05, "channel_end": 384},
-    {"plot_start_s": 2100,  "channel_start": 0, "plot_duration": 0.05, "channel_end": 384},
+    {"plot_start_s": 5700, "channel_start": 0, "plot_duration": 0.05, "channel_end": 384},
+    {"plot_start_s": 6200,  "channel_start": 0, "plot_duration": 0.05, "channel_end": 384},
+    {"plot_start_s": 6900,  "channel_start": 0, "plot_duration": 0.05, "channel_end": 384},
 ]
 
 # ── Section 2 & 3: Scatter / motion-overlay windows ──────────────────────────
@@ -62,7 +70,7 @@ SCATTER_WINDOWS    = None
 SCATTER_DURATION_S = 720.0
 
 # ── Analysis time range ───────────────────────────────────────────────────────
-ANALYSIS_START_S = None
+ANALYSIS_START_S = 5600
 ANALYSIS_END_S   = None
 
 # ── Normalisation ─────────────────────────────────────────────────────────────
@@ -80,15 +88,48 @@ RMS_START_S       = 0.0
 
 import json
 import numpy as np
+from collections import defaultdict
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
+import matplotlib.ticker as mticker
 from matplotlib.patches import Rectangle
 import spikeinterface as si
 
 def _time_mask(arr_times, t0, t1):
     return (arr_times >= t0) & (arr_times < t1)
+
+
+def _find_clusters_file(base_path):
+    """
+    Search base_path and its ancestors for a directory whose name contains
+    "imec" (case-insensitive), then look inside that directory for either
+    "clusters.npz" or "<YYYYMMDD>_clusters.npz". If several dated files
+    exist, the most recent date wins. Returns a Path or None.
+    """
+    import re
+    candidate_dirs = [base_path] + list(base_path.parents)
+    imec_dir = None
+    for d in candidate_dirs:
+        if "imec" in d.name.lower():
+            imec_dir = d
+            break
+    if imec_dir is None or not imec_dir.exists():
+        return None
+
+    pattern = re.compile(r"^(?:(\d{8})_)?clusters\.npz$")
+    matches = []
+    for f in imec_dir.glob("*clusters.npz"):
+        m = pattern.match(f.name)
+        if m:
+            date_str = m.group(1) or "00000000"
+            matches.append((date_str, f))
+    if not matches:
+        return None
+    matches.sort(key=lambda x: x[0])
+    return matches[-1][1]
+
 
 # ── Resolve paths ─────────────────────────────────────────────────────────────
 BASE_PATH  = Path(BASE_PATH)
@@ -105,6 +146,14 @@ else:
 HAS_LOCS   = _locs_path.exists()
 HAS_MOTION = MOTION_DIR is not None
 
+if CLUSTERS_PATH is not None:
+    _clusters_path = Path(CLUSTERS_PATH)
+    HAS_CLUSTERS = _clusters_path.exists()
+else:
+    _found = _find_clusters_file(BASE_PATH)
+    _clusters_path = _found
+    HAS_CLUSTERS = _found is not None
+
 print("="*70)
 print("SPIKE DENSITY PIPELINE")
 print("="*70)
@@ -112,6 +161,7 @@ print(f"  Base path  : {BASE_PATH}")
 print(f"  Peaks dir  : {PEAKS_DIR}")
 print(f"  Locs file  : {_locs_path}  {'✓' if HAS_LOCS else '✗ NOT FOUND — falling back to channel-map positions'}")
 print(f"  Motion dir : {MOTION_DIR if HAS_MOTION else '(none — displacement = 0)'}")
+print(f"  Clusters   : {_clusters_path if HAS_CLUSTERS else '✗ NOT FOUND — sorted-units panel will be left blank'}")
 print(f"  Plots dir  : {PLOTS_DIR}")
 
 # ── Load recording ────────────────────────────────────────────────────────────
@@ -143,6 +193,34 @@ noise_levels = si.get_noise_levels(rec, return_scaled=False)
 abs_thresholds = noise_levels * detect_threshold   # (n_channels,)
 print(f"  Noise levels range: {noise_levels.min():.2f} – {noise_levels.max():.2f}")
 print(f"  Threshold range  : {abs_thresholds.min():.2f} – {abs_thresholds.max():.2f}")
+
+# ── Parse channel numbers from channel_ids (e.g. "imec0.ap#AP0" → 0) ─────────
+# SpikeInterface channel_ids for this rig are strings like "imec0.ap#AP<n>".
+# The trailing integer <n> is the device channel number; gaps in that integer
+# sequence (e.g. AP10 missing) are exactly the deleted channels. Consecutive
+# channel numbers are paired two-per-row on this staggered probe, so the row
+# and left/right column of ANY channel — present or deleted — follow directly
+# from its number: row = n // 2, col = n % 2 (verified against the raw
+# channel_locations pattern: col 0 is always the smaller-x contact in its row,
+# col 1 the larger-x one, even though the actual x values alternate between
+# {16,48} and {0,32} depending on row parity). No probe.json or geometry
+# inference needed — this is exact and works for any missing channel.
+print("\n[1c/6] Parsing channel numbers from channel_ids for grid placement …")
+import re as _re
+_chan_id_strs = [str(c) for c in rec.get_channel_ids()]
+
+def _parse_channel_number(s):
+    m = _re.search(r"(\d+)$", s)
+    if m is None:
+        raise ValueError(f"Could not parse a trailing channel number from channel_id '{s}'")
+    return int(m.group(1))
+
+chan_num_local = np.array([_parse_channel_number(s) for s in _chan_id_strs], dtype=int)
+n_total_channels = int(chan_num_local.max()) + 1   # assumes numbering starts at 0
+present_set = set(chan_num_local.tolist())
+deleted_channel_numbers = sorted(set(range(n_total_channels)) - present_set)
+print(f"  Parsed {n_channels} channel numbers, range 0–{n_total_channels - 1} expected.")
+print(f"  Deleted/missing channel numbers ({len(deleted_channel_numbers)}): {deleted_channel_numbers}")
 
 # ── Load peaks ────────────────────────────────────────────────────────────────
 print("\n[2/6] Loading peaks …")
@@ -183,7 +261,7 @@ n_peaks    = len(peaks)
 
 # ── Resolve peak positions ────────────────────────────────────────────────────
 print("\n[2b/6] Resolving peak positions …")
-'''
+
 if HAS_LOCS:
     _all_locs = np.load(_locs_path)
     if isinstance(_all_locs, np.lib.npyio.NpzFile):
@@ -199,27 +277,6 @@ if HAS_LOCS:
         locs_y = np.zeros(len(_all_locs), dtype=float)
     peak_positions_raw = np.column_stack([locs_x, locs_y]).astype(float)
     print("  Using external localization file for peak positions.")
-else:
-    peak_positions_raw = channel_positions[peaks_combined["channel_index"]].astype(float)
-    print("  No localization file found — using peak channel locations from the channel map.")
-'''
-
-if HAS_LOCS:
-    _all_locs = np.load(_locs_path)
-    if isinstance(_all_locs, np.lib.npyio.NpzFile):
-        _all_locs = _all_locs["locs"]
-    if hasattr(_all_locs, "dtype") and _all_locs.dtype.names is not None:
-        locs_y = _all_locs["y"] if "y" in _all_locs.dtype.names else np.zeros(len(_all_locs), dtype=float)
-    elif np.ndim(_all_locs) == 2 and _all_locs.shape[1] >= 2:
-        locs_y = _all_locs[:, 1]
-    else:
-        locs_y = np.zeros(len(_all_locs), dtype=float)
-    # x is deliberately NOT taken from the localization file — the localization x
-    # estimate is known to be noisy/unreliable. Instead we use the x position of
-    # each peak's max (detection) channel, taken directly from the channel map.
-    locs_x = channel_positions[peaks_combined["channel_index"], 0].astype(float)
-    peak_positions_raw = np.column_stack([locs_x, locs_y]).astype(float)
-    print("  Using external localization file for peak depth (y); x taken from max-channel position.")
 else:
     peak_positions_raw = channel_positions[peaks_combined["channel_index"]].astype(float)
     print("  No localization file found — using peak channel locations from the channel map.")
@@ -303,6 +360,10 @@ def get_corrected_positions(peaks, positions, motion_obj, fs, time_offset=0):
 
 
 def snap_to_nearest_channel(positions, channel_positions):
+    """
+    Snap each (x, y) position to the nearest channel — no exclusions;
+    every channel currently present in `channel_positions` is eligible.
+    """
     if len(positions) == 0:
         return np.empty((0, 2), dtype=float), np.empty((0,), dtype=int)
 
@@ -524,13 +585,13 @@ for i, w in enumerate(scatter_windows):
     save_fig(fig, PLOTS_DIR / f"03_corrected_scatter_{i+1:02d}_t{t0:.0f}-{t1:.0f}s.png")
 
 # =========================================================================
-# SECTION 4 — REGULARIZED MATRIX GRID MAP (4 COLUMNS × 96 ROWS)
+# SECTION 4 — REGULARIZED MATRIX GRID MAP (2 COLUMNS × exact-depth ROWS)
 # =========================================================================
 print("\n" + "="*70)
 print("SECTION 4 — Spike density and RMS Maps (Regular Matrix Layout)")
 print("="*70)
 
-print("  Snapping corrected peak positions to nearest channel …")
+print("  Snapping corrected peak positions to nearest channel (no exclusions) …")
 snapped_xy, snapped_ch_idx = snap_to_nearest_channel(corrected_positions, channel_positions)
 
 print(f"  Counting spikes per channel [{_analysis_start:.1f}–{_analysis_end:.0f} s] …")
@@ -564,106 +625,308 @@ else:
     print(f"  Saved result table → {_npy_result.name}")
 
 corr_label = "corrected" if HAS_MOTION else "raw (no correction)"
-# ──────────────────────────────────────────────────────────────────────────────
-# CONSTRUCT 96 ROW × 4 COLUMN IDEALIZED GRID MATRIX
-# ──────────────────────────────────────────────────────────────────────────────
-print(f"  Mapping active channels to un-staggered 96x4 matrix grid ...")
-
-grid_active = np.zeros((96, 4), dtype=bool)
-grid_density = np.zeros((96, 4))
-grid_rms = np.zeros((96, 4))
-
-# Dynamically extract geometric anchors directly from YOUR data
-unique_x = np.sort(np.unique(ch_x_by_id))
-unique_y = np.sort(np.unique(ch_y_by_id))
-
-x_min = np.min(unique_x)
-y_min = np.min(unique_y)
-
-# Use median differences to find your probe's true column and row spacing (pitch)
-diff_x = np.diff(unique_x)
-x_pitch = np.median(diff_x[diff_x > 2.0]) if len(diff_x[diff_x > 2.0]) > 0 else 16.0
-
-diff_y = np.diff(unique_y)
-y_pitch = np.median(diff_y[diff_y > 2.0]) if len(diff_y[diff_y > 2.0]) > 0 else 20.0
-y_anchor = int(np.round(y_min / y_pitch) * y_pitch)
-y_tick_step = max(1, int(round(2 * y_pitch)))
-
-# Populate matrices by quantizing physical coordinates using the dynamic pitch
-for idx in range(n_channels):
-    cx = ch_x_by_id[idx]
-    cy = ch_y_by_id[idx]
-    
-    # Accurately map X coordinate to column 0, 1, 2, or 3
-    col = np.clip(int(np.round((cx - x_min) / x_pitch)), 0, 3)
-    
-    # For a 96-row grid, 2 physical depth levels (e.g. y=20 and y=40) form 1 logical row
-    depth_idx = int(np.round((cy - y_min) / y_pitch))
-    row = np.clip(depth_idx // 2, 0, 95)
-    
-    grid_active[row, col] = True
-    grid_density[row, col] = density_by_channel[idx]
-    grid_rms[row, col] = rms_by_channel[idx]
 
 # ──────────────────────────────────────────────────────────────────────────────
-# PLOT MATRIX VISUALIZATION
+# BUILD THE PROBE MAP DIRECTLY FROM REAL (x, y) POSITIONS — no channel-number
+# arithmetic, no renumbering. Every surviving channel is drawn as a rectangle
+# of fixed size (cell_width × cell_height) centered on its own real (x, y) in
+# µm, exactly as get_channel_locations() reports it. Multiple shanks (or any
+# other x-gaps) fall out automatically, since we plot true x/y coordinates
+# rather than artificial column/row indices.
+#
+# Deleted channels have no entry in channel_positions at all (they were fully
+# removed from `rec`), so their position can't be read directly. To still draw
+# them, we reconstruct the *local* staggering pattern purely from the spatial
+# data itself (which two x-offsets recur every other row, on which shank) and
+# use that to interpolate the missing (x, y) — never from channel numbering.
 # ──────────────────────────────────────────────────────────────────────────────
-fig, axes = plt.subplots(1, 2, figsize=(11, 16), constrained_layout=True)
+print("  Building probe map directly from channel_locations (x, y) …")
+
+all_x = ch_x_by_id
+all_y = ch_y_by_id
+
+# cell height = smallest real spacing between distinct y-values (row pitch)
+_unique_y_all = np.sort(np.unique(all_y))
+_y_diffs = np.diff(_unique_y_all)
+_y_diffs = _y_diffs[_y_diffs > 1e-6]
+cell_height = float(np.min(_y_diffs)) if len(_y_diffs) > 0 else 1.0
+
+# ── Segment channels into shanks by clustering distinct x-values: a gap much
+# larger than the typical local x-spacing marks a new shank. This is what
+# "automatically maps out the distance between different shanks" — real x
+# gaps are preserved as-is on the plot, no artificial column collapsing.
+_unique_x_all = np.sort(np.unique(all_x))
+_x_diffs = np.diff(_unique_x_all)
+_typical_x_step = float(np.median(_x_diffs)) if len(_x_diffs) > 0 else 1.0
+_shank_break = _x_diffs > (_typical_x_step * 4 if _typical_x_step > 0 else 1e9)
+
+_x_groups = []
+_cur = [_unique_x_all[0]] if len(_unique_x_all) > 0 else []
+for i in range(1, len(_unique_x_all)):
+    if _shank_break[i - 1]:
+        _x_groups.append(_cur)
+        _cur = []
+    _cur.append(_unique_x_all[i])
+if _cur:
+    _x_groups.append(_cur)
+n_shanks = len(_x_groups)
+print(f"  cell_height (row pitch) = {cell_height:.2f} µm  |  {n_shanks} shank(s) detected "
+      f"from x-gaps > {_typical_x_step * 4:.1f} µm.")
+
+def _shank_of_x(x):
+    for gi, grp in enumerate(_x_groups):
+        if min(grp) - 1e-6 <= x <= max(grp) + 1e-6:
+            return gi
+    # fallback: nearest group
+    return int(np.argmin([min(abs(x - v) for v in grp) for grp in _x_groups]))
+
+shank_of_local = np.array([_shank_of_x(x) for x in all_x])
+
+# position -> local channel index, for exact real-channel lookup
+_pos_key = lambda x, y: (round(float(x), 2), round(float(y), 2))
+pos_to_local_idx = {_pos_key(all_x[i], all_y[i]): i for i in range(n_channels)}
+
+# ── Per shank: reconstruct the 2-per-row stagger pattern from real data,
+# then build every (x, y) slot the lattice implies — filled where a real
+# channel matches exactly, otherwise deleted (interpolated position). ──────
+slots = []   # each: dict(x, y, shank, local_idx or None)
+for gi in range(n_shanks):
+    members = np.where(shank_of_local == gi)[0]
+    if len(members) == 0:
+        continue
+    xs_g = all_x[members]
+    ys_g = all_y[members]
+    y_min_g, y_max_g = ys_g.min(), ys_g.max()
+    n_rows_g = int(round((y_max_g - y_min_g) / cell_height)) + 1
+
+    rows_by_y_g = defaultdict(list)
+    for m in members:
+        row = int(round((all_y[m] - y_min_g) / cell_height))
+        rows_by_y_g[row].append(all_x[m])
+
+    # Determine the x-pair pattern separately for even and odd rows (mode of
+    # observed full pairs), and the channel cell width (median pair spacing).
+    even_pairs, odd_pairs, widths = [], [], []
+    for row, xs_here in rows_by_y_g.items():
+        if len(xs_here) >= 2:
+            xs_sorted = tuple(sorted(set(round(x, 2) for x in xs_here))[:2])
+            widths.append(xs_sorted[-1] - xs_sorted[0])
+            (even_pairs if row % 2 == 0 else odd_pairs).append(xs_sorted)
+    cell_width = float(np.median(widths)) if widths else _typical_x_step * 2
+
+    def _mode_pair(pairs):
+        if not pairs:
+            return None
+        vals, counts = np.unique(np.array(pairs), axis=0, return_counts=True)
+        return tuple(vals[np.argmax(counts)])
+
+    pattern_even = _mode_pair(even_pairs)
+    pattern_odd = _mode_pair(odd_pairs)
+
+    # De-stagger for VISUALIZATION only: shift the odd-row pattern to align
+    # with the even-row pattern, so both parities render at the same two x
+    # positions instead of the true alternating offset. This never changes
+    # which real channel a given (x, y) maps to — that lookup already used
+    # the TRUE x above (pos_to_local_idx) — it only changes where the
+    # rectangle is drawn. Shanks are unaffected: this offset is tiny (the
+    # within-shank stagger amount) relative to the shank-detection gap
+    # threshold, so it can't move a channel into the wrong shank.
+    align_offset = (pattern_even[0] - pattern_odd[0]
+                     if (pattern_even is not None and pattern_odd is not None) else 0.0)
+
+    for row in range(n_rows_g):
+        y_row = y_min_g + row * cell_height
+        is_odd = row % 2 == 1
+        pattern = pattern_odd if is_odd else pattern_even
+        xs_present_here = sorted(set(round(x, 2) for x in rows_by_y_g.get(row, [])))
+
+        if pattern is not None:
+            expected_xs = list(pattern)
+        elif len(xs_present_here) >= 1:
+            # No fully-paired row of this parity anywhere on the shank to
+            # learn the pattern from — fall back to just the x(s) we actually
+            # observed at this row (can't safely guess the partner's x).
+            expected_xs = xs_present_here
+        else:
+            continue   # nothing known about this row at all — skip silently
+
+        vis_shift = align_offset if (is_odd and pattern is pattern_odd and align_offset != 0.0) else 0.0
+
+        for x_slot in expected_xs:
+            local_idx = pos_to_local_idx.get(_pos_key(x_slot, y_row))
+            slots.append({"x": x_slot + vis_shift, "y": y_row, "shank": gi,
+                           "local_idx": local_idx, "cell_width": cell_width})
+
+n_active = sum(1 for s in slots if s["local_idx"] is not None)
+n_deleted = sum(1 for s in slots if s["local_idx"] is None)
+print(f"  Reconstructed {len(slots)} probe slots across {n_shanks} shank(s)  |  "
+      f"{n_active} active  |  {n_deleted} deleted (interpolated position).")
+if n_deleted != len(deleted_channel_numbers):
+    print(f"  NOTE: spatial reconstruction found {n_deleted} deleted slots, but channel_id "
+          f"gaps indicated {len(deleted_channel_numbers)} deleted channels — worth a manual "
+          f"check if these don't match (could mean a row's pattern couldn't be inferred).")
+
+# Per-slot values, for the plotting loop below
+slot_density = np.array([density_by_channel[s["local_idx"]] if s["local_idx"] is not None else 0.0
+                          for s in slots])
+slot_rms = np.array([rms_by_channel[s["local_idx"]] if s["local_idx"] is not None else 0.0
+                      for s in slots])
+slot_active = np.array([s["local_idx"] is not None for s in slots])
+slot_x = np.array([s["x"] for s in slots])
+slot_y = np.array([s["y"] for s in slots])
+slot_w = np.array([s["cell_width"] for s in slots])
+
+# local channel index -> index into `slots`, for cluster-unit snapping below
+local_idx_to_slot = {}
+for si, s in enumerate(slots):
+    if s["local_idx"] is not None:
+        local_idx_to_slot[s["local_idx"]] = si
+
+# Per-depth (real y) summed spike rate, across every slot at that exact y —
+# generalizes "sum of both channels sharing a depth" to any number of shanks.
+_unique_y_slots = np.sort(np.unique(slot_y))
+row_spike_density = np.array([slot_density[slot_y == y].sum() for y in _unique_y_slots])
+
+# ──────────────────────────────────────────────────────────────────────────────
+# SORTED-UNIT SPIKE RATES — from clusters.npz
+# Each unit's (posX, posY) is snapped to the nearest surviving channel (no
+# exclusions — deleted channels aren't in channel_positions, so this can't
+# select them), and its rate is summed into that channel's slot.
+# ──────────────────────────────────────────────────────────────────────────────
+slot_cluster_rate = np.zeros(len(slots))
+n_units_plotted = 0
+
+if HAS_CLUSTERS:
+    print(f"  Loading sorted units → {_clusters_path.name}")
+    _clusters = np.load(_clusters_path)
+    cl_x = np.asarray(_clusters["posX"], dtype=float)
+    cl_y = np.asarray(_clusters["posY"], dtype=float)
+    cl_rate = np.asarray(_clusters["rate"], dtype=float)
+    cluster_positions = np.column_stack([cl_x, cl_y])
+    _, cluster_ch_idx = snap_to_nearest_channel(cluster_positions, channel_positions)
+    n_occupied = 0
+    for u_idx, ch_idx in enumerate(cluster_ch_idx):
+        si = local_idx_to_slot.get(int(ch_idx))
+        if si is None:
+            continue
+        if slot_cluster_rate[si] == 0:
+            n_occupied += 1
+        slot_cluster_rate[si] += cl_rate[u_idx]
+    n_units_plotted = len(cl_rate)
+    print(f"  {n_units_plotted} sorted units snapped onto the channel grid "
+          f"({n_occupied} distinct channels occupied).")
+else:
+    print("  No clusters.npz file found — sorted-units panel will be left blank.")
+
+# ──────────────────────────────────────────────────────────────────────────────
+# PLOT — True Physical Scale (32:20 aspect) with dynamic tight bounding box
+# ──────────────────────────────────────────────────────────────────────────────
+x_min_all, x_max_all = slot_x.min() - slot_w.max() * 0.5, slot_x.max() + slot_w.max() * 0.5
+y_min_all, y_max_all = slot_y.min() - cell_height * 0.5, slot_y.max() + cell_height * 0.5
+x_range = x_max_all - x_min_all
+y_range = y_max_all - y_min_all
+
+# ######### CHANGED ########
+# # 1. Anchor the physical HEIGHT. This ensures the figure is always tall enough 
+# # to fit the text, whether you are plotting a short tetrode or a tall single-shank.
+# FIG_HEIGHT = 8.0  
+
+# # 2. Calculate panel width dynamically to perfectly preserve the true physical aspect ratio.
+# PANEL_W_IN = FIG_HEIGHT * (x_range / y_range)
+
+# # 3. Size the total figure width (lowered the +10 padding to +5 to remove empty whitespace)
+# FIG_WIDTH = (PANEL_W_IN * 3.35) + 5
+
+
+
+# 1. Anchor the exact physical width you want for each map panel (in inches)
+PANEL_W_IN = 0.5 ###THIS IS WHAT CHANGES THE SCALE! 
+
+# 2. Allow the figure to be exactly as tall as physically necessary to maintain 
+# the 1:1 aspect ratio. This is what preserves your 32x20 block geometry perfectly.
+FIG_HEIGHT = PANEL_W_IN * (y_range / x_range)
+
+# 3. Size the total figure width perfectly to fit the panels + colorbars + spacing
+# (3 main panels + 0.35 ratio for the bar strip)
+FIG_WIDTH = (PANEL_W_IN * 6) + 10
+
+fig, axes = plt.subplots(
+    1, 4, figsize=(FIG_WIDTH, FIG_HEIGHT),
+    constrained_layout=True,
+    gridspec_kw={"width_ratios": [1, 0.35, 1, 1]}, sharey=True
+)
+# fig.set_constrained_layout_pads(wspace=0.15, hspace=0.05, w_pad=0.2, h_pad=0.1)
 cm = plt.get_cmap("plasma")  # Standard high-contrast Purple-Yellow scheme
+ax_map_idx = {0: 0, 1: 2, 2: 3}   # panel index -> axes slot
 
-for ax_idx, ax in enumerate(axes):
-    if ax_idx == 0:
-        data_grid = grid_density
-        v_active = grid_density[grid_active]
+for panel in range(3):
+    ax = axes[ax_map_idx[panel]]
+
+    if panel == 0:
+        data_vals = slot_density
+        v_active = slot_density[slot_active]
         vmin, vmax = (v_active.min(), v_active.max()) if len(v_active) > 0 else (0, 1)
         ax_title = f"Channel Map: {count_label}\n[{_analysis_start:.0f}–{_analysis_end:.0f} s] | {corr_label}"
         cbar_label = count_label
-    else:
-        data_grid = grid_rms
-        v_active = grid_rms[grid_active]
+    elif panel == 1:
+        data_vals = slot_rms
+        v_active = slot_rms[slot_active]
         vmin, vmax = (v_active.min(), v_active.max()) if len(v_active) > 0 else (0, 1)
         ax_title = f"Channel Map: Noise RMS\n[Over {RMS_DURATION_S/60:.0f} min] | {corr_label}"
         cbar_label = "RMS Amplitude"
+    else:
+        data_vals = slot_cluster_rate
+        v_active = slot_cluster_rate[slot_active]
+        vmin, vmax = (v_active.min(), v_active.max()) if len(v_active) > 0 else (0, 1)
+        ax_title = (f"Sorted Units: Spike Rate (Hz)\n{n_units_plotted} units"
+                    if HAS_CLUSTERS else "Sorted Units\n(no clusters.npz found)")
+        cbar_label = "Rate (Hz)"
 
     norm = mcolors.Normalize(vmin=vmin, vmax=vmax)
-    
-    # Render every cell in the 96x4 matrix
-    for r in range(96):
-        for c in range(4):
-            if grid_active[r, c]:
-                val = data_grid[r, c]
-                color = cm(norm(val))
-                # Active cells: drawn flush against each other with matching thin edges to prevent cracks
-                rect = Rectangle((c, r), 1.0, 1.0, facecolor=color, edgecolor=color, linewidth=0.05)
-                ax.add_patch(rect)
-            else:
-                # Deleted channels: colored solid black with a sharp red diagonal line from corner to corner
-                rect = Rectangle((c, r), 1.0, 1.0, facecolor='black', edgecolor='black', linewidth=0.05)
-                ax.add_patch(rect)
-                ax.plot([c, c + 1.0], [r, r + 1.0], color='red', linewidth=0.75, zorder=4)
 
-    # Grid configurations
-    ax.set_xlim(0, 4)
-    ax.set_ylim(0, 96)
-    ax.set_aspect('equal')
+    for si, s in enumerate(slots):
+        x, y, w = s["x"], s["y"], s["cell_width"]
+        if slot_active[si]:
+            color = cm(norm(data_vals[si]))
+            rect = Rectangle((x - w / 2, y - cell_height / 2), w, cell_height,
+                              facecolor=color, edgecolor=color, linewidth=0.05)
+            ax.add_patch(rect)
+        else:
+            rect = Rectangle((x - w / 2, y - cell_height / 2), w, cell_height,
+                              facecolor='black', edgecolor='black', linewidth=0.05)
+            ax.add_patch(rect)
+            ax.plot([x - w / 2, x + w / 2], [y - cell_height / 2, y + cell_height / 2],
+                    color='red', linewidth=0.75, zorder=4)
+
+    ax.set_xlim(x_min_all, x_max_all)
+    ax.set_ylim(y_min_all, y_max_all)
     
-    # Structural axes descriptors
-    ax.set_xticks(np.arange(4) + 0.5)
-    ax.set_xticklabels([f"Col {col_num}" for col_num in range(4)], fontsize=9)
-    
-    # Y-ticks map out the physical recording depths corresponding to the grid rows
-    y_ticks = np.arange(0, 97, 10)
-    ax.set_yticks(y_ticks)
-    ax.set_yticklabels([f"{int(y_anchor + y_idx * y_tick_step)} µm" for y_idx in y_ticks], fontsize=9)
-    
-    ax.set_xlabel("Columns", fontsize=11)
-    ax.set_ylabel("Calculated Probe Depth (µm)", fontsize=11)
-    ax.set_title(ax_title, fontsize=12, pad=12)
-    
-    # Append the calibrated colorbar mapping
+    # REVERT TO EQUAL: 1 µm width exactly equals 1 µm height visually.
+    ax.set_aspect('equal', adjustable='box')
+
+    ax.set_xlabel("x position (µm)", fontsize=16)
+    if panel == 0:
+        ax.set_ylabel("Probe depth, y (µm)", fontsize=18)
+    ax.set_title(ax_title, fontsize=18, pad=20)
+    ax.tick_params(axis="both", labelsize=14)
+
     sm = plt.cm.ScalarMappable(cmap=cm, norm=norm)
     sm.set_array([])
-    fig.colorbar(sm, ax=ax, label=cbar_label, fraction=0.046, pad=0.05)
+    cbar = fig.colorbar(sm, ax=ax, label=cbar_label, fraction=0.09, pad=0.08, aspect=30)
+    cbar.ax.tick_params(labelsize=14)
+    cbar.set_label(cbar_label, fontsize=16)
+
+# ── Slim per-depth rate strip, sitting directly beside the density panel ──────
+ax_bar = axes[1]
+ax_bar.barh(_unique_y_slots, row_spike_density, height=cell_height * 0.95,
+            color="steelblue", edgecolor="none")
+ax_bar.set_ylim(y_min_all, y_max_all)
+ax_bar.set_xlabel(count_label, fontsize=14)
+ax_bar.set_title("Per-depth\nsum", fontsize=18, pad=20)
+for spine in ("top", "right", "left"):
+    ax_bar.spines[spine].set_visible(False)
+ax_bar.tick_params(axis="y", left=False, labelleft=False)
+ax_bar.tick_params(axis="x", labelsize=12)
 
 save_fig(fig, PLOTS_DIR / f"04_channel_density_rms_matrix_grid_t{_analysis_start:.0f}-{_analysis_end:.0f}s.png")
 
