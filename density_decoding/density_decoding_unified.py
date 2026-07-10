@@ -99,12 +99,12 @@ _ap.add_argument('--zscore_spike_features', action=_argparse.BooleanOptionalActi
 _ap.add_argument('--embargo_trials',  type=int,   default=0,
                  help='Trials dropped on EACH side of EVERY train<->test boundary '
                       '(both directions: train->test and test->train). 0 = off.')
-_ap.add_argument('--context_before_bins', type=int, default=3,
+_ap.add_argument('--context_before_bins', type=int, default=0,  # ###CHANGED
                  help='Number of past time bins to include in the decoder context window '
-                      '(default 3; set 0 for instantaneous decoding).')
-_ap.add_argument('--context_after_bins', type=int, default=3,
+                      '(default 0; set >0 to use temporal memory).')
+_ap.add_argument('--context_after_bins', type=int, default=0,  # ###CHANGED
                  help='Number of future time bins to include in the decoder context window '
-                      '(default 3; set 0 for past-only decoding).')
+                      '(default 0; set >0 to use temporal memory).')
 _ap.add_argument('--animal_speed_gate', type=float, default=0.0)
 _ap.add_argument('--selected_trials', default=None,
                  help='Path to a similar_trials CSV from trial_structure.py. '
@@ -113,6 +113,13 @@ _ap.add_argument('--selected_trials', default=None,
 _ap.add_argument('--demean_beh', action=_argparse.BooleanOptionalAction, default=False,
                  help='Subtract each trial\'s own mean from its binned behaviour '
                       'before decoding (applied after global z-scoring).')
+_ap.add_argument('--smooth_beh_window_sec', type=float, default=0.0,  # ###CHANGED
+                 help='If >0, smooth the (z-scored) behaviour trace with a centered '
+                      'moving-average window of this length (s) BEFORE any trial '
+                      'binning. The smoothed trace is what gets fed to the '
+                      'encoder/decoder and compared against predicted traces. '
+                      '0 (default) = no smoothing, and nothing else in the pipeline '
+                      'changes (including no diagnostic plot being produced).')
 # ── unified shuffle switch ─────────────────────────────────────────────────────
 _ap.add_argument('--shuffle',       choices=['none', 'shift', 'scramble'], default='none',
                  help='none: real decode. shift: circular-shift null. '
@@ -161,12 +168,22 @@ _beh_key_dir   = BEHAVIOR_VAR.lower().replace(' ', '_')
 _speedgate_tag = f"_gate{_args.animal_speed_gate:.3g}" if _args.animal_speed_gate > 0 else ""
 _selected_tag  = "_selected"
 _demean_tag = "_demeanbeh" if _args.demean_beh else ""
+# ###CHANGED: fold context_before/after into the results-dir name so runs with
+# different temporal-context settings never collide/overwrite each other or
+# get silently mixed together (empty string when both are 0, matching the
+# other optional tags' convention).
+_context_tag = (f"_ctxb{_args.context_before_bins}a{_args.context_after_bins}"
+               if (_args.context_before_bins > 0 or _args.context_after_bins > 0) else "")
+# ###CHANGED: fold behaviour smoothing into the results-dir name too, so a
+# smoothed run never collides with / gets mixed into an unsmoothed run's
+# directory (and vice versa). Empty string when smoothing is off (0).
+_smooth_tag = (f"_sw{_args.smooth_beh_window_sec:.3g}" if _args.smooth_beh_window_sec > 0 else "")
 
 BASE_RESULTS_DIR = os.path.join(
     BASE_DIR, "density_decoding",
     f"{_beh_key_dir}_{BIN_SIZE_MS:.3g}ms_{T_TRIAL:.3g}s_{_args.chunk_style}_"
     f"{'zscoreboth' if _args.zscore_spike_features else 'nozscore'}"
-    f"_embargo{_args.embargo_trials}{_speedgate_tag}{_selected_tag}{_demean_tag}"
+    f"_embargo{_args.embargo_trials}{_speedgate_tag}{_selected_tag}{_demean_tag}{_context_tag}{_smooth_tag}"
     f"_chunksize{_args.chunk_size}"
 )
 os.makedirs(BASE_RESULTS_DIR, exist_ok=True)
@@ -589,6 +606,33 @@ else:
     print(f"[ZSCORE] {BEHAVIOR_VAR} NOT z-scored.")
 
 # %% [markdown]
+# #### **BEHAVIOUR SMOOTHING (optional, --smooth_beh_window_sec)**
+# If --smooth_beh_window_sec > 0, replaces beh_z with a centered moving-
+# average-smoothed version BEFORE any trial binning — so the smoothed trace
+# is what everything downstream (feed diagnostics, decoder input,
+# observed-vs-predicted comparison) sees. beh_z_unsmoothed is kept only for
+# the before/after diagnostic plot below (produced after trial windows are
+# defined, so it can show 5 random trial windows). If left at 0 (default),
+# beh_z is left completely untouched, no plot is produced, and nothing else
+# in the pipeline changes.
+
+# %%
+SMOOTH_BEH_WINDOW_SEC  = _args.smooth_beh_window_sec  # ###CHANGED
+SMOOTH_BEH             = SMOOTH_BEH_WINDOW_SEC > 0     # ###CHANGED
+beh_z_unsmoothed = beh_z.copy()  # ###CHANGED — kept for the diagnostic plot only
+if SMOOTH_BEH:  # ###CHANGED
+    _beh_dt = float(np.median(np.diff(beh_t)))
+    _n_smooth_samples = max(1, int(round(SMOOTH_BEH_WINDOW_SEC / _beh_dt)))
+    beh_z = pd.Series(beh_z).rolling(
+        window=_n_smooth_samples, center=True, min_periods=1
+    ).mean().values.astype(np.float32)
+    print(f"[SMOOTH_BEH] {BEHAVIOR_VAR} smoothed with a centered "
+          f"{SMOOTH_BEH_WINDOW_SEC:.3g}s window ({_n_smooth_samples} samples, "
+          f"dt≈{_beh_dt*1000:.1f} ms).")
+else:
+    print("[SMOOTH_BEH] Behaviour smoothing NOT applied (smooth_beh_window_sec=0).")
+
+# %% [markdown]
 # #### **TRIAL WINDOWS**
 
 # %%
@@ -626,6 +670,38 @@ else:
     _sel_meta    = None
     print(f"[REGULAR GRID] {n_trials_beh} sliding windows of {T_TRIAL} s")
 
+# ── behaviour smoothing diagnostic: before/after on 5 random trials ─────────
+# Only produced if --smooth_beh_window_sec > 0; otherwise nothing changes and no
+# plot is made. Placed here (rather than right after smoothing above) since
+# it needs trial_starts/trial_ends to pick concrete trial windows to show.
+if SMOOTH_BEH:  # ###CHANGED
+    _smooth_diag_path = os.path.join(
+        RUN_DIR, f'behaviour_smoothing_check_{BEHAVIOR_VAR.lower().replace(" ", "_")}_{SESSION}.png')
+    print("[PLOT] Behaviour smoothing check ...")
+    _rng_smooth = np.random.default_rng(123)
+    _n_show_smooth = min(5, n_trials_beh)
+    _smooth_trial_idx = np.sort(_rng_smooth.choice(n_trials_beh, _n_show_smooth, replace=False))
+    fig_sm, axes_sm = plt.subplots(_n_show_smooth, 1, figsize=(14, 2.6 * _n_show_smooth), squeeze=False)
+    fig_sm.suptitle(f"Behaviour smoothing check — {BEHAVIOR_VAR}  "
+                    f"(centered {SMOOTH_BEH_WINDOW_SEC:.3g}s window)  {SESSION}", fontsize=10)
+    for _row, _k in enumerate(_smooth_trial_idx):
+        _ax_sm = axes_sm[_row, 0]
+        _t0, _t1 = trial_starts[_k], trial_ends[_k]
+        _m = (beh_t >= _t0) & (beh_t < _t1)
+        _ax_sm.plot(beh_t[_m] - _t0, beh_z_unsmoothed[_m], color='darkgray', lw=1.0, alpha=0.85, label='raw (z-scored)')
+        _ax_sm.plot(beh_t[_m] - _t0, beh_z[_m], color='tab:blue', lw=1.4, alpha=0.9, label='smoothed')
+        _ax_sm.set_title(f"trial {_k}  (t={_t0:.1f}–{_t1:.1f} s)", fontsize=8, loc='left')
+        _ax_sm.set_ylabel(BEHAVIOR_VAR, fontsize=8)
+        _ax_sm.tick_params(labelsize=7); _ax_sm.grid(True, alpha=0.2)
+        if _row == 0:
+            _ax_sm.legend(fontsize=7, loc='upper right')
+        if _row == _n_show_smooth - 1:
+            _ax_sm.set_xlabel('Time within trial (s)', fontsize=8)
+    plt.tight_layout()
+    plt.savefig(_smooth_diag_path, dpi=130, bbox_inches='tight')
+    plt.close(fig_sm)
+    print(f"Saved → {_smooth_diag_path}")
+
 CHUNK_STYLE     = _args.chunk_style
 CHUNK_SIZE      = _args.chunk_size
 TEST_PERCENTAGE = _args.test_percentage
@@ -654,6 +730,10 @@ _params = {
         "zscore_spike_features": ZSCORE_SPIKE_FEATURES, "spike_feature_zscore_params": _zscore_params_sf,
         "using_selected_trials": USING_SELECTED_TRIALS, "selected_trials_meta": _sel_meta,
         "demean_beh": DEMEAN_BEH,
+        "context_before_bins": int(_args.context_before_bins),  # ###CHANGED
+        "context_after_bins": int(_args.context_after_bins),    # ###CHANGED
+        "smooth_beh": bool(SMOOTH_BEH),                          # ###CHANGED
+        "smooth_beh_window_sec": float(SMOOTH_BEH_WINDOW_SEC) if SMOOTH_BEH else None,  # ###CHANGED
     },
 }
 with open(_params_json, 'w') as _f:
@@ -1200,8 +1280,8 @@ if SHUFFLE == 'none':
     _, obs_beh, pred_beh, metrics_beh = sliding_window_decoder(
         weight_matrix, _bin_beh_for_decode, eval_train_idx, eval_test_idx,
         behavior_type="continuous", verbose=False,
-        context_before=_args.context_before_bins,
-        context_after=_args.context_after_bins,
+        context_before=_args.context_before_bins,  # ###CHANGED
+        context_after=_args.context_after_bins,  # ###CHANGED
     )
     print(f"\n{'='*52}")
     print(f"  {BEHAVIOR_VAR}  R² = {metrics_beh['r2']:+.4f}   r = {metrics_beh['corr']:.4f}")
@@ -1210,11 +1290,26 @@ if SHUFFLE == 'none':
 
     # ── decode traces plot ────────────────────────────────────────────────────
     print("[PLOT] Decode traces ...")
-    _half_win = 7 // 2
-    _n_win = N_T_BINS - _half_win + 1
-    _n_pred_bins = _n_win - _half_win
+    # ###CHANGED: the trace-panel geometry previously hardcoded a stale
+    # window_size=7 formula (_half_win = 7 // 2; _n_win = N_T_BINS - _half_win + 1;
+    # _n_pred_bins = _n_win - _half_win), which assumed sliding_window_decoder
+    # always dropped 3 bins off each edge. sliding_window() now branches on
+    # context_before/context_after instead of window_size, so with the default
+    # context_before=context_after=0 it returns ALL N_T_BINS bins (nothing
+    # dropped), and pred_beh/obs_beh no longer match the old hardcoded shape —
+    # causing a reshape ValueError. Derive the geometry from the actual
+    # context args used in the sliding_window_decoder call above instead.
+    _ctx_before = _args.context_before_bins
+    _ctx_after  = _args.context_after_bins
+    _n_pred_bins = N_T_BINS - _ctx_before - _ctx_after
     _bin_dur_s = T_TRIAL / N_T_BINS
-    _bin_offsets = np.arange(_half_win, _n_win) * _bin_dur_s
+    _bin_offsets = (np.arange(_n_pred_bins) + _ctx_before) * _bin_dur_s
+    # old (stale) version, kept for reference:
+    # _half_win = 7 // 2
+    # _n_win = N_T_BINS - _half_win + 1
+    # _n_pred_bins = _n_win - _half_win
+    # _bin_dur_s = T_TRIAL / N_T_BINS
+    # _bin_offsets = np.arange(_half_win, _n_win) * _bin_dur_s
     _n_test = len(eval_test_idx)
     _pred_by_trial = pred_beh.reshape(_n_test, _n_pred_bins)
     _obs_by_trial  = obs_beh.reshape(_n_test, _n_pred_bins)
@@ -1388,7 +1483,14 @@ else:
         _, obs_s, pred_s, metrics_s = sliding_window_decoder(
             weight_matrix_s, bin_beh_all_s[:_n_wm_s], eval_train_idx, eval_test_idx,
             behavior_type="continuous", verbose=False,
-        )
+            context_before=_args.context_before_bins,  # ###CHANGED — null runs must use the
+            context_after=_args.context_after_bins,     # ###CHANGED   same decoder architecture
+        )                                               # ###CHANGED   as the real run, or the
+                                                          # ###CHANGED   real-vs-null comparison
+                                                          # ###CHANGED   is invalid (previously
+                                                          # ###CHANGED   this call omitted both
+                                                          # ###CHANGED   kwargs and silently fell
+                                                          # ###CHANGED   back to context (0, 0)).
 
         _t_elapsed = (datetime.datetime.now() - _t_start).total_seconds()
         print(f"\n  Done in {_t_elapsed/60:.1f} min  |  R²={metrics_s['r2']:+.4f}  r={metrics_s['corr']:.4f}")
@@ -1411,6 +1513,8 @@ else:
             "session": SESSION, "behavior_var": BEHAVIOR_VAR,
             "n_valid": int(n_valid), "n_train": int(len(train_idx_fixed)), "n_test": int(len(test_idx_fixed)),
             "r2": float(metrics_s['r2']), "r": float(metrics_s['corr']), "elapsed_sec": float(_t_elapsed),
+            "context_before_bins": int(_args.context_before_bins),  # ###CHANGED
+            "context_after_bins": int(_args.context_after_bins),    # ###CHANGED
             "note": (f"r2/r: {'SCRAMBLED' if SHUFFLE=='scramble' else 'SHIFTED'} "
                     f"{'spikes vs REAL behaviour' if SHUFFLE_MODE=='neural' else 'REAL spikes vs perturbed behaviour'}"),
             "timestamp": datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),

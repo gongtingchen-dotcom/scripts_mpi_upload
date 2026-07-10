@@ -77,12 +77,18 @@ _ap.add_argument('--zscore_spike_features', action=_argparse.BooleanOptionalActi
 _ap.add_argument('--embargo_trials',  type=int,   default=1,       # NEW
                  help='Number of trials to drop from training on each side of every CV test '
                       'block boundary (default 1; set 0 to disable).')
-_ap.add_argument('--context_before_bins', type=int, default=3,
+# _ap.add_argument('--context_before_bins', type=int, default=3,  # old default
+#                  help='Number of past time bins to include in the decoder context window '
+#                      '(default 3; set 0 for instantaneous decoding).')
+_ap.add_argument('--context_before_bins', type=int, default=0,  # ###CHANGED
                  help='Number of past time bins to include in the decoder context window '
-                      '(default 3; set 0 for instantaneous decoding).')
-_ap.add_argument('--context_after_bins', type=int, default=3,
+                      '(default 0; set >0 to use temporal memory).')
+# _ap.add_argument('--context_after_bins', type=int, default=3,  # old default
+#                  help='Number of future time bins to include in the decoder context window '
+#                      '(default 3; set 0 for past-only decoding).')
+_ap.add_argument('--context_after_bins', type=int, default=0,  # ###CHANGED
                  help='Number of future time bins to include in the decoder context window '
-                      '(default 3; set 0 for past-only decoding).')
+                      '(default 0; set >0 to use temporal memory).')
 _ap.add_argument('--animal_speed_gate', type=float, default=0.0,   ###CHANGED
                  help='If > 0, drop trial windows where the animal mean speed exceeds this '   ###CHANGED
                       'threshold (units match the "speed" column in texture_pca_df, '          ###CHANGED
@@ -1583,8 +1589,8 @@ print(f"\n[DECODE] Running decoder on held-out test windows ...")
 _, obs_beh, pred_beh, metrics_beh = sliding_window_decoder(
     weight_matrix, _bin_beh_for_decode, train_idx, test_idx,
     behavior_type="continuous", verbose=False,
-    context_before=_args.context_before_bins,
-    context_after=_args.context_after_bins,
+    context_before=_args.context_before_bins,  # ###CHANGED
+    context_after=_args.context_after_bins,  # ###CHANGED
 )
 print(f"\n{'='*52}")
 print(f"  {BEHAVIOR_VAR}  R² = {metrics_beh['r2']:+.4f}   r = {metrics_beh['corr']:.4f}")

@@ -41,8 +41,9 @@ python /u/gongt/scripts/density_decoding/density_decoding_unified.py \
     --animal GLC6962 \
     --exp _g_g0 \
     --behavior_var PC1 \
-    --embargo_trials 2 \
-    --shuffle shift \
-    --shuffle_mode neural \
-    --chunk_size 50
+    --chunk_size 10 \
+    --context_before_bins 2 \
+    --context_after_bins 2 \
+    --smooth_beh_window_sec 1 \
+    --selected_trials /ptmp/gongt/behaviour/GLC6962/GLC6962_g_g0/similar_trials_PC1_peak_rms0.5.csv \
     

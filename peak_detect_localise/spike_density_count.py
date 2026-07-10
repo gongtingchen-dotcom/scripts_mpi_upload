@@ -45,16 +45,19 @@ PEAKS_DIR      = r"/nexus/posix0/MBR-neuralsystems/ephys/GLC7248/GLC7248_a_g1/pr
 # PEAKS_DIR      = os.path.join(BASE_PATH, "thresholding_peaks_3.5_ts5600_teend")
                  # if None → BASE_PATH / "thresholding_peaks"
 
-PEAK_LOCS_PATH = os.path.join(PEAKS_DIR, "localized_peaks_mt_raw.npy")
+PEAK_LOCS_PATH = None
+# PEAK_LOCS_PATH = os.path.join(PEAKS_DIR, "localized_peaks_mt_raw.npy")
                  # Path to localized_peaks_mt_raw.npy.
                  # If None → PEAKS_DIR / "localized_peaks_mt_raw.npy" is tried;
                  # if that also doesn't exist, sections 2–4 are skipped entirely.
 
-MOTION_DIR     = os.path.join(PEAKS_DIR, "motion_estimates/motion_dredge")
-                 # Path to SpikeInterface motion object folder.
-                 # Set to None to skip motion loading/correction (displacement = 0).
+# MOTION_DIR     = os.path.join(PEAKS_DIR, "motion_estimates/motion_dredge")
+#                  # Path to SpikeInterface motion object folder.
+#                  # Set to None to skip motion loading/correction (displacement = 0).
 
-PLOTS_DIR      = os.path.join(PEAKS_DIR, "spike_density_plots_3.5motion")   # if None → PEAKS_DIR / "spike_density_plots"
+MOTION_DIR     = r"/nexus/posix0/MBR-neuralsystems/ephys/GLC7248/GLC7248_a_g1/preprocessed/thresholding_peaks_3.5_ts5600_teend/motion_estimates/motion_dredge"
+
+PLOTS_DIR      = os.path.join(PEAKS_DIR, "spike_density_plots_3.5motion_halfwidthsfiltered")   # if None → PEAKS_DIR / "spike_density_plots"
 
 CLUSTERS_PATH  = r"/nexus/posix0/MBR-neuralsystems/ephys/GLC7248/GLC7248_a_g1/GLC7248_a_g1_imec0/20260625_clusters.npz"
 
@@ -133,17 +136,17 @@ def _find_clusters_file(base_path):
 
 # ── Resolve paths ─────────────────────────────────────────────────────────────
 BASE_PATH  = Path(BASE_PATH)
-PEAKS_DIR  = Path(PEAKS_DIR) if PEAKS_DIR  else BASE_PATH / "thresholding_peaks"
-MOTION_DIR = Path(MOTION_DIR) if MOTION_DIR is not None else None
-PLOTS_DIR  = Path(PLOTS_DIR)  if PLOTS_DIR  else PEAKS_DIR / "spike_density_plots"
+PEAKS_DIR  = Path(PEAKS_DIR)
+MOTION_DIR = Path(MOTION_DIR)
+PLOTS_DIR  = Path(PLOTS_DIR)
 PLOTS_DIR.mkdir(parents=True, exist_ok=True)
 
 if PEAK_LOCS_PATH is not None:
     _locs_path = Path(PEAK_LOCS_PATH)
 else:
-    _locs_path = PEAKS_DIR / "localized_peaks_mt_raw.npy"
+    _locs_path = None
 
-HAS_LOCS   = _locs_path.exists()
+HAS_LOCS = _locs_path is not None and _locs_path.exists()
 HAS_MOTION = MOTION_DIR is not None
 
 if CLUSTERS_PATH is not None:
@@ -224,8 +227,7 @@ print(f"  Deleted/missing channel numbers ({len(deleted_channel_numbers)}): {del
 
 # ── Load peaks ────────────────────────────────────────────────────────────────
 print("\n[2/6] Loading peaks …")
-peaks_combined = np.load(PEAKS_DIR / "peaks_combined2_sorted.npy")
-
+peaks_combined = np.load(PEAKS_DIR / "peaks_combined2_sorted_halfwidthsfiltered_0.075ms.npy")
 _peaks2_path   = PEAKS_DIR / "peaks2.npy"
 _matched_path  = PEAKS_DIR / "peaks_matched.npy"
 peaks2         = np.load(_peaks2_path)   if _peaks2_path.exists()  else None
