@@ -1,16 +1,11 @@
 {
 	"folders": [
 		{
-			"name": "gongt",
 			"path": ".."
 		},
 		{
-			"name": "ephys",
-			"path": "../../../nexus/posix0/MBR-neuralsystems/ephys"
-		},
-		{
-			"name": "gongt",
-			"path": "../../../ptmp/gongt"
+			"path": "../../../data/0_collaboration/ceph_phys"
 		}
-	]
+	],
+	"settings": {}
 }
