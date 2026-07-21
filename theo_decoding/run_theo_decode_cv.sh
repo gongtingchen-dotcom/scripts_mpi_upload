@@ -1,0 +1,139 @@
+#!/bin/bash -l
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LOG_DIR="${SCRIPT_DIR}/logs"
+mkdir -p "${LOG_DIR}"
+RUN_TS="$(date +%Y%m%d_%H%M%S)"
+LOG_FILE="${LOG_DIR}/theo_decode_cv_${RUN_TS}.log"
+
+# Optional email notifications for local runs.
+# Set ENABLE_EMAIL=1 and optionally MAIL_TO before running this script.
+ENABLE_EMAIL="${ENABLE_EMAIL:-0}"
+MAIL_TO="${MAIL_TO:-gong.tingchen@gmail.com}"
+
+send_mail_msg() {
+  local subject="$1"
+  local body="$2"
+  if [[ "${ENABLE_EMAIL}" != "1" ]]; then
+    return 0
+  fi
+  if command -v mail >/dev/null 2>&1; then
+    printf '%s\n' "${body}" | mail -s "${subject}" "${MAIL_TO}" || true
+  elif command -v mailx >/dev/null 2>&1; then
+    printf '%s\n' "${body}" | mailx -s "${subject}" "${MAIL_TO}" || true
+  else
+    echo "WARN: ENABLE_EMAIL=1 but no 'mail' or 'mailx' command found; skipping email." >&2
+  fi
+}
+
+on_exit() {
+  local exit_code=$?
+  if [[ ${exit_code} -eq 0 ]]; then
+    send_mail_msg "[theo_decode_cv] END (success)" "Run finished successfully on $(hostname).\nLog: ${LOG_FILE}"
+  else
+    send_mail_msg "[theo_decode_cv] FAIL (exit=${exit_code})" "Run failed on $(hostname).\nLog: ${LOG_FILE}"
+  fi
+}
+trap on_exit EXIT
+
+exec > >(tee -a "${LOG_FILE}") 2>&1
+
+echo "Log file: ${LOG_FILE}"
+echo "Start time: $(date -Is)"
+
+# Activate environment (prefer micromamba, fallback to conda)
+activated=0
+
+# If the user already activated the env before launching this script, keep it.
+if [[ "${CONDA_DEFAULT_ENV:-}" == "decoding" || "${MAMBA_DEFAULT_ENV:-}" == "decoding" ]]; then
+  activated=1
+  echo "Using already-active environment: decoding"
+fi
+
+if [[ ${activated} -eq 0 ]]; then
+  if command -v micromamba >/dev/null 2>&1; then
+    eval "$(micromamba shell hook -s bash)"
+    micromamba activate decoding
+    activated=1
+  fi
+fi
+
+if [[ ${activated} -eq 0 ]]; then
+  if [[ -n "${MAMBA_EXE:-}" && -x "${MAMBA_EXE}" ]]; then
+    export MAMBA_ROOT_PREFIX="${MAMBA_ROOT_PREFIX:-$HOME/micromamba}"
+    eval "$(${MAMBA_EXE} shell hook -s bash)"
+    micromamba activate decoding
+    activated=1
+  fi
+fi
+
+if [[ ${activated} -eq 0 ]]; then
+  if [[ -x "$HOME/.local/bin/micromamba" ]]; then
+    export MAMBA_EXE="$HOME/.local/bin/micromamba"
+    export MAMBA_ROOT_PREFIX="${MAMBA_ROOT_PREFIX:-$HOME/micromamba}"
+    eval "$(${MAMBA_EXE} shell hook -s bash)"
+    micromamba activate decoding
+    activated=1
+  fi
+fi
+
+if [[ ${activated} -eq 0 ]]; then
+  if [[ -x "$HOME/micromamba/bin/micromamba" ]]; then
+    export MAMBA_EXE="$HOME/micromamba/bin/micromamba"
+    export MAMBA_ROOT_PREFIX="${MAMBA_ROOT_PREFIX:-$HOME/micromamba}"
+    eval "$(${MAMBA_EXE} shell hook -s bash)"
+    micromamba activate decoding
+    activated=1
+  fi
+fi
+
+if [[ ${activated} -eq 0 ]]; then
+  if ! command -v conda >/dev/null 2>&1; then
+    if [[ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]]; then
+      source "$HOME/miniconda3/etc/profile.d/conda.sh"
+    elif [[ -f "$HOME/anaconda3/etc/profile.d/conda.sh" ]]; then
+      source "$HOME/anaconda3/etc/profile.d/conda.sh"
+    fi
+  fi
+
+  if command -v conda >/dev/null 2>&1; then
+    conda activate decoding
+    activated=1
+  fi
+fi
+
+if [[ ${activated} -eq 0 ]]; then
+  echo "ERROR: neither micromamba nor conda environment activation is available."
+  echo "Expected env name: decoding"
+  echo "Debug: CONDA_DEFAULT_ENV=${CONDA_DEFAULT_ENV:-<unset>} MAMBA_DEFAULT_ENV=${MAMBA_DEFAULT_ENV:-<unset>}"
+  echo "Debug: MAMBA_EXE=${MAMBA_EXE:-<unset>}"
+  exit 1
+fi
+
+echo "Host: $(hostname)"
+echo "Python: $(which python)"
+echo "Running local shell execution."
+
+send_mail_msg "[theo_decode_cv] BEGIN" "Run started on $(hostname).\nLog: ${LOG_FILE}"
+
+PYTHON=${PYTHON_PATH:-$(which python)}
+
+# FNN is intentionally excluded in this environment because it segfaults during fit.
+$PYTHON /gpfs/laur/personal/gongt/scripts/theo_decoding/theo_decode_cv.py \
+  --recording-path /gpfs/laur/data/0_collaboration/ceph_phys/GLC6962/GLC6962_g_g0/preprocessed \
+  --peaks-path /gpfs/laur/data/0_collaboration/ceph_phys/GLC6962/GLC6962_g_g0/preprocessed/thresholding_peaks_3.5/peaks_combined2_sorted.npy \
+  --behavior-df-path /gpfs/laur/data/0_collaboration/sepia_filming/sepia_processed/ceph_analysis_dfs/GLC6633-6644-6811-6962-20260223/texture_pca_df_preproc.pkl \
+  --metadata-df-path /gpfs/laur/data/0_collaboration/sepia_filming/sepia_processed/ceph_analysis_dfs/GLC6633-6644-6811-6962-20260223/metadata_df.pkl \
+  --output-dir /gpfs/laur/data/0_collaboration/ceph_phys/GLC6962/GLC6962_g_g0/theo_pipeline_try3_localizeddrift_chandrop_hyperfix \
+  --animal GLC6962 \
+  --background eink \
+  --pc-cols PC1,PC2,PC3,PC4,PC5 \
+  --dt 0.2 \
+  --bin-before 3 \
+  --bin-current 1 \
+  --bin-after 3 \
+  --n-splits 5 \
+  --models WF,WC,SVR,XGB
+
+echo "End time: $(date -Is)"

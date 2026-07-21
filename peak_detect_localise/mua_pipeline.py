@@ -287,8 +287,7 @@ def load_data(file_path, n_jobs=6, ops=None):
         
         # Check if it's a SpikeGLX directory
         if 'imec' in file_path or any('imec' in f for f in os.listdir(file_path)):
-            rec = si.read_spikeglx(file_path, stream_name='imec0.ap',
-                                    load_sync_channel=False)
+            rec = si.read_spikeglx(file_path, stream_name='imec0.ap')
             return rec
         
         # Try generic load as last resort
@@ -306,8 +305,7 @@ def load_data(file_path, n_jobs=6, ops=None):
             )
     
     # ── Otherwise assume it's a SpikeGLX .bin file ─────────────────────
-    rec = si.read_spikeglx(file_path, stream_name='imec0.ap',
-                            load_sync_channel=False)
+    rec = si.read_spikeglx(file_path, stream_name='imec0.ap')
     return rec
 
 

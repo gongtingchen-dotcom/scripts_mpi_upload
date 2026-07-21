@@ -5,6 +5,9 @@
 		},
 		{
 			"path": "../../../data/0_collaboration/ceph_phys"
+		},
+		{
+			"path": "../../../data/0_collaboration/sepia_filming"
 		}
 	],
 	"settings": {}

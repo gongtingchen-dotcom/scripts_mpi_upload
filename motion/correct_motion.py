@@ -3,9 +3,19 @@
 
 # %%
 import argparse as _ap
+import subprocess
+import sys
+from pathlib import Path
+
 _parser = _ap.ArgumentParser(add_help=False)
 _parser.add_argument('--chunks_dir', default=None)
 _parser.add_argument('--motion_name', default='motion_dredge_0000min_0070min')
+_parser.add_argument('--motion_path', nargs='*', default=None,
+                    help='Explicit motion estimate directory or directories to process.')
+_parser.add_argument('--motion_root', nargs='*', default=None,
+                    help='Root directory or directories containing motion_* folders to process.')
+_parser.add_argument('--motion_glob', default='motion_*',
+                    help='Glob used to discover motion folders under each --motion_root.')
 _parser.add_argument('--amp_pct', type=int, default=0,
                     help='Minimum amplitude percentile (same as used in run_dredge_chunked.py). 0 = no filter.')
 _parser.add_argument('--boussard', action='store_true',
@@ -14,24 +24,60 @@ _parser.add_argument('--boussard', action='store_true',
                          'peaks_combined2_sorted + localized_peaks_mt_raw files.')
 _args, _ = _parser.parse_known_args()
 
+
+def _discover_motion_paths():
+    if _args.motion_path:
+        return [Path(p) for p in _args.motion_path]
+
+    if _args.motion_root:
+        discovered = []
+        for root in _args.motion_root:
+            root_path = Path(root)
+            discovered.extend(sorted(p for p in root_path.glob(_args.motion_glob) if p.is_dir()))
+        return discovered
+
+    if _args.boussard:
+        default_chunks = _args.chunks_dir or 'chunks_b1'
+        return [Path('/gpfs/laur/data/0_collaboration/ceph_phys/GLC6962/GLC6962_l_g1/preprocessed/thresholding_peaks/boussard_localization_merged/motion_estimates') / default_chunks / _args.motion_name]
+
+    default_chunks = _args.chunks_dir or 'chunks_1'
+    return [Path('/gpfs/laur/data/0_collaboration/ceph_phys/GLC6962/GLC6962_l_g1/preprocessed/thresholding_peaks/motion_estimates') / default_chunks / _args.motion_name]
+
+
+_motion_targets = _discover_motion_paths()
+if len(_motion_targets) > 1:
+    print('[correct_motion] batch mode — processing motion folders:')
+    for _target in _motion_targets:
+        print(f'  - {_target}')
+
+    _self = Path(__file__).resolve()
+    for _target in _motion_targets:
+        _cmd = [sys.executable, str(_self), '--motion_path', str(_target), '--amp_pct', str(_args.amp_pct)]
+        if _args.chunks_dir is not None:
+            _cmd.extend(['--chunks_dir', _args.chunks_dir])
+        if _args.boussard:
+            _cmd.append('--boussard')
+        print(f"[correct_motion] running: {' '.join(_cmd)}")
+        subprocess.run(_cmd, check=True)
+    raise SystemExit(0)
+
 import spikeinterface as si
 import numpy as np
 import spikeinterface as si
-from pathlib import Path
 import os
 
 # Use non-interactive backend when running from the command line with --chunks_dir
-if _args.chunks_dir is not None:
+if _args.chunks_dir is not None or _args.motion_path is not None or _args.motion_root is not None:
     import matplotlib
     matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 # Suppress interactive display when running in batch mode (--chunks_dir provided)
-if _args.chunks_dir is not None:
+if _args.chunks_dir is not None or _args.motion_path is not None or _args.motion_root is not None:
     plt.show = lambda: None
 
 # %%
-rec_dir = r'/ptmp/gongt/GLC6962_l_g1/preprocessed'
+rec_dir = r'/gpfs/laur/data/0_collaboration/ceph_phys/GLC6962/GLC6962_l_g1/preprocessed'
 rec = si.load(rec_dir)
 print(rec)
 
@@ -60,7 +106,12 @@ else:
     # ── Standard mode (SpikeInterface peaks + localized_peaks_mt_raw) ──────
     base_dir        = _peaks_folder
     _default_chunks = "chunks_1"
-    motion_path = base_dir / "motion_estimates" / (_args.chunks_dir or _default_chunks) / _args.motion_name
+    if _args.motion_path:
+        motion_path = Path(_args.motion_path[0])
+    elif _args.motion_root:
+        motion_path = _motion_targets[0]
+    else:
+        motion_path = base_dir / "motion_estimates" / (_args.chunks_dir or _default_chunks) / _args.motion_name
     print(f"[correct_motion] Standard mode — motion: {motion_path}")
 
     peaks                    = np.load(base_dir / "peaks_combined2_sorted.npy")
@@ -69,6 +120,7 @@ else:
     depths = estimated_peak_locations['y']
 
 motion = si.Motion.load(motion_path)
+motion_label = motion_path.name.removeprefix('motion_')
 print(f"Peaks: {len(peaks):,}  |  fields: {peaks.dtype.names}")
 
 # Global amplitude colour scale – computed from ALL peaks before any filtering so
@@ -458,7 +510,7 @@ if PLOT_MOTION_OVERLAY_SCATTER:
         peaks,
         depths,
         motion_list=[motion],
-        labels=['DREDge'],
+        labels=[motion_label],
         colors=['red'],
         sampling_frequency=rec.sampling_frequency,
         time_offset=time_offset,
@@ -473,7 +525,7 @@ if PLOT_MOTION_OVERLAY_SCATTER_AMP:
         peaks,
         depths,
         motion_list=[motion],
-        labels=['DREDge'],
+        labels=[motion_label],
         colors=['red'],
         sampling_frequency=rec.sampling_frequency,
         time_offset=time_offset,
@@ -490,7 +542,7 @@ if PLOT_MOTION_OVERLAY_SCATTER_ALL:
         peaks_all,
         depths_all,
         motion_list=[motion],
-        labels=['DREDge'],
+        labels=[motion_label],
         colors=['red'],
         sampling_frequency=rec.sampling_frequency,
         time_offset=time_offset,
@@ -529,7 +581,7 @@ if PLOT_CORRECTED_SCATTER:
 if PLOT_CORRECTED_SCATTER_AMP:
     print("plotting corrected_scatter_amp...")
     plot_drift_scatter(peaks, corrected_depths, rec.sampling_frequency, t_min=plot_start_time, t_max=plot_end_time,
-                       color_by_amplitude=True, title='DREDge-Corrected Peak Depths (coloured by amplitude)',
+                       color_by_amplitude=True, title=f'{motion_label}-Corrected Peak Depths (coloured by amplitude)',
                        amp_vmin=_amp_vmin, amp_vmax=_amp_vmax,
                        save_name=motion_path / f'corrected_scatter_amp_{plot_start_time:.0f}s_{plot_end_time:.0f}s.png')
 
@@ -566,7 +618,7 @@ if PLOT_MOTION_OVERLAY_CHANNELS:
         peaks,
         depths2,
         motion_list=[motion],
-        labels=['DREDge'],
+        labels=[motion_label],
         colors=['red'],
         sampling_frequency=rec.sampling_frequency,
         time_offset=time_offset,
@@ -581,7 +633,7 @@ if PLOT_MOTION_OVERLAY_CHANNELS_AMP:
         peaks,
         depths2,
         motion_list=[motion],
-        labels=['DREDge'],
+        labels=[motion_label],
         colors=['red'],
         sampling_frequency=rec.sampling_frequency,
         time_offset=time_offset,
@@ -628,7 +680,7 @@ if PLOT_CORRECTED_CHANNEL:
 if PLOT_CORRECTED_CHANNEL_AMP:
     print("plotting corrected_channel_scatter_amp...")
     plot_drift_scatter(peaks, corrected_depths2_snapped, rec.sampling_frequency, t_min=plot_start_time, t_max=plot_end_time,
-                       color_by_amplitude=True, title='DREDge-Corrected Channel Depths (coloured by amplitude)',
+                       color_by_amplitude=True, title=f'{motion_label}-Corrected Channel Depths (coloured by amplitude)',
                        amp_vmin=_amp_vmin, amp_vmax=_amp_vmax,
                        save_name=motion_path / f'corrected_channel_amp_{plot_start_time:.0f}s_{plot_end_time:.0f}s.png')
 
@@ -785,22 +837,14 @@ if PLOT_CHANNEL_SUMMARY:
     print(f"Summary saved → {_summary_path}")
 
 
-# %%
-# # Export for neural decoding
-# out_dir = base_dir
-# spike_times    = peaks["sample_index"].astype(np.int64)
-# spike_clusters = corrected_channel.astype(np.int32)   # cluster id = motion-corrected channel
+#### **KS4 CORRECTION**
 
-# np.save(out_dir / "spike_times.npy",    spike_times)
-# np.save(out_dir / "spike_clusters.npy", spike_clusters)
-# print(f"Saved spike_times ({spike_times.shape}) and spike_clusters ({spike_clusters.shape})")
-# print(f"Unique clusters (channels): {np.unique(spike_clusters).size}")
+# import spikeinterface as si
+# import numpy as np
+# import spikeinterface as si
+# from pathlib import Path
+# import os
 
-
-# %% [markdown]
-# #### **KS4 CORRECTION**
-
-# %%
 # kilosort_output_dir = r'/ptmp/gongt/GLC7189/GLC7189_g_g1/KS4/nb5_nc32_n_t9_pcs10_car0_clr1_jobs36_thrd8_te360/sorter_output'
 # ops = np.load(os.path.join(kilosort_output_dir, 'ops.npy'), allow_pickle=True).item()
 # dshift = ops['dshift']                        # (n_batches, n_depth_bins)  shift in um
@@ -810,7 +854,6 @@ if PLOT_CHANNEL_SUMMARY:
 # print(f"time_bins range: {time_bins_ks4.min():.1f} – {time_bins_ks4.max():.1f} s")
 # print(f"depth_bins range: {depth_bins_ks4.min():.1f} – {depth_bins_ks4.max():.1f} um")
 
-# %%
 # plot_motion_overlay(
 #     peaks,
 #     depths,
@@ -824,7 +867,6 @@ if PLOT_CHANNEL_SUMMARY:
 # )
 
 
-# %%
 # ks4_corrected_depths = get_corrected_depths(
 #     peaks,
 #     depths,
@@ -832,7 +874,6 @@ if PLOT_CHANNEL_SUMMARY:
 #     rec.sampling_frequency
 # )
 
-# %%
 # plot_drift_scatter(peaks, ks4_corrected_depths, rec.sampling_frequency, t_min=0*60, t_max=15*60,
 #                    save_name=motion_path / 'drift_scatter_ks4_corrected.png')
 
