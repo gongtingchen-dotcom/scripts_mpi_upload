@@ -2,7 +2,13 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-LOG_DIR="${SCRIPT_DIR}/logs"
+
+# Single source of truth for where this run's outputs go -- used both for
+# the python --output-dir below and for the log file, so the log always
+# lands next to the run it documents instead of in scripts/logs (which mixes
+# logs from every run/output-dir together with no way to tell them apart).
+OUTPUT_DIR="/gpfs/laur/data/0_collaboration/ceph_phys/GLC6962/GLC6962_g_g0/theo_pipeline_try4_smooth25_overlap5_nsplits5"
+LOG_DIR="${OUTPUT_DIR}/logs"
 mkdir -p "${LOG_DIR}"
 RUN_TS="$(date +%Y%m%d_%H%M%S)"
 LOG_FILE="${LOG_DIR}/theo_decode_cv_${RUN_TS}.log"
@@ -125,15 +131,17 @@ $PYTHON /gpfs/laur/personal/gongt/scripts/theo_decoding/theo_decode_cv.py \
   --peaks-path /gpfs/laur/data/0_collaboration/ceph_phys/GLC6962/GLC6962_g_g0/preprocessed/thresholding_peaks_3.5/peaks_combined2_sorted.npy \
   --behavior-df-path /gpfs/laur/data/0_collaboration/sepia_filming/sepia_processed/ceph_analysis_dfs/GLC6633-6644-6811-6962-20260223/texture_pca_df_preproc.pkl \
   --metadata-df-path /gpfs/laur/data/0_collaboration/sepia_filming/sepia_processed/ceph_analysis_dfs/GLC6633-6644-6811-6962-20260223/metadata_df.pkl \
-  --output-dir /gpfs/laur/data/0_collaboration/ceph_phys/GLC6962/GLC6962_g_g0/theo_pipeline_try3_localizeddrift_chandrop_hyperfix \
+  --output-dir "${OUTPUT_DIR}" \
   --animal GLC6962 \
   --background eink \
   --pc-cols PC1,PC2,PC3,PC4,PC5 \
   --dt 0.2 \
-  --bin-before 3 \
+  --bin-before 6 \
   --bin-current 1 \
-  --bin-after 3 \
+  --bin-after 6 \
   --n-splits 5 \
-  --models WF,WC,SVR,XGB
+  --models WF,WC,SVR,XGB \
+  --channel-smooth-window 25 \
+  --channel-smooth-overlap 5
 
 echo "End time: $(date -Is)"

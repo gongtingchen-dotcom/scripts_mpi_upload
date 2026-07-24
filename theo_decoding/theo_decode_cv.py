@@ -3,7 +3,6 @@
 import argparse
 import datetime
 import json
-import os
 import platform
 import subprocess
 import sys
@@ -82,7 +81,8 @@ def _git_info():
 
 
 def build_run_params(
-    args, pc_cols, selected_models, resolved_motion_path, drift_corrected, resolved_localized_peaks_path
+    args, pc_cols, selected_models, resolved_motion_path, drift_corrected, resolved_localized_peaks_path,
+    channel_info,
 ):
     """Everything needed to reproduce this run: full CLI args, resolved
     settings decided at runtime (e.g. auto-derived motion path), the
@@ -103,23 +103,13 @@ def build_run_params(
             "motion_path": str(resolved_motion_path) if resolved_motion_path else None,
             "localized_peaks_path": str(resolved_localized_peaks_path) if resolved_localized_peaks_path else None,
             "drift_corrected": drift_corrected,
+            "channels": channel_info,
         },
         "model_hyperparams": {
             "WF": {"regressor": "RidgeCV", "alphas": DEFAULT_RIDGE_ALPHAS.tolist()},
             "WC": {"regressor": "WienerCascade", "degree": WC_DEGREE},
             "SVR": {"regressor": "SVR", "C": SVR_C, "max_iter": SVR_MAX_ITER},
-            "XGB": {
-                "regressor": "XGBRegressor",
-                "objective": "reg:squarederror",
-                "max_depth": 3,
-                "n_estimators": 200,
-                "learning_rate": 0.1,
-                "subsample": 0.9,
-                "colsample_bytree": 0.9,
-                "tree_method": "hist",
-                "random_state": args.seed,
-                "n_jobs": 1,
-            },
+            "XGB": {"regressor": "XGBRegressor", **xgb_params(args)},
         },
         "package_versions": {
             "numpy": _package_version("numpy"),
@@ -174,6 +164,30 @@ def parse_args():
         action="store_true",
         help="Skip motion/drift correction and use each peak's originally detected "
         "channel_index as-is (old behavior).",
+    )
+    p.add_argument(
+        "--channel-smooth-window",
+        type=int,
+        default=0,
+        help="Smooth active channels by sliding a window of this many (depth-sorted) "
+        "channels before binning MUA, e.g. 20. This pipeline was built for ~10-20 "
+        "sorted single units; with raw per-channel MUA as 'units' instead, neighboring "
+        "channels (~20um apart) are highly spatially correlated rather than "
+        "independent, and the feature count vastly exceeds this dataset's sample "
+        "count. Each virtual channel's per-bin value is the MEAN spike count across "
+        "its member channels. Default 0 disables smoothing (one feature per channel, "
+        "old behavior). See --channel-smooth-overlap for the window's step size; the "
+        "resulting number of windows is printed at runtime and saved, along with "
+        "per-window membership and spike times, to <output-dir>/channel_grouping.npz.",
+    )
+    p.add_argument(
+        "--channel-smooth-overlap",
+        type=int,
+        default=0,
+        help="Number of channels shared between consecutive smoothing windows (must "
+        "be < --channel-smooth-window). 0 = windows exactly tile the depth axis with "
+        "no overlap; larger = more overlap between neighboring windows (heavier "
+        "smoothing). Only used when --channel-smooth-window > 0.",
     )
     return p.parse_args()
 
@@ -240,6 +254,108 @@ def snap_to_nearest_channel(positions, channel_positions, chunk_size=10000):
     return snapped_ch_idx
 
 
+# --- Channel grouping (spatial "smoothing") ----------------------------------
+# This pipeline (Neural_Decoding_sklearn) was built around ~10-20 sorted
+# single units. Here it's fed 355 raw per-channel MUA counts instead, which
+# is a different regime: adjacent channels are only ~20um apart, well within
+# a single neuron's spike waveform footprint, so neighboring channels are
+# highly spatially correlated rather than independent "units" -- they mostly
+# rediscover the same nearby population at different amplitudes. That both
+# (a) inflates the feature count (2500+ lagged features from ~13k time bins)
+# well past what the per-fold sample size supports, and (b) wastes most of
+# that dimensionality on redundant, not independent, signal.
+#
+# Design: sort active channels by depth (y, tie-broken by x) and slide a
+# window of CHANNELS (not microns) along that ordering -- a standard boxcar
+# smoothing filter over the depth axis, controlled directly by:
+#   --channel-smooth-window   W  = number of (depth-sorted) channels per group
+#   --channel-smooth-overlap  V  = number of channels shared between
+#                                  consecutive windows (must be < W)
+#   step = W - V   (spacing between window starts; step=W <=> V=0 <=> windows
+#                    exactly tile with no overlap)
+# Windows tile from the start (0, step, 2*step, ...); if that leaves a
+# leftover tail shorter than a full window, one final window is added ending
+# exactly at the last channel (so every active channel is always covered),
+# which can make that last window's overlap with its neighbor larger than V.
+# The resulting number of windows is a CONSEQUENCE of W, V and the channel
+# count -- not an input -- and is printed/returned so it's always visible.
+#
+# Channels at the same depth (this probe has ~2 columns per depth row;
+# x-span ~48um vs ~3800um in y) always land in the same window, since sorting
+# is depth-primary -- merging across x within a window is nearly free,
+# whereas merging across distant depths would throw away real spatial (and
+# therefore decodable) structure.
+#
+# Per-group output is the MEAN spike count per member channel (summed counts
+# / member count), not the raw sum: window occupancy isn't perfectly constant
+# (the coverage-guaranteeing final window can be larger), and dividing out
+# keeps every group's value directly interpretable as a local average firing
+# rate, comparable across groups regardless of how many raw channels fed it.
+
+
+def group_channels_sliding(spike_times_active, active_channel_idx, channel_positions, window_channels, overlap_channels):
+    """Slide a window of `window_channels` channels (sorted by depth), moving
+    by `window_channels - overlap_channels` each step, to pool
+    `spike_times_active` (already filtered to active_channel_idx) into
+    overlapping virtual channels covering every active channel.
+
+    Returns (spike_times_grouped, member_channel_idx, member_counts,
+    depth_center_um, step_channels): first four have length n_groups (however
+    many windows this geometry produces -- see module comment above);
+    member_channel_idx[g] holds the ORIGINAL probe channel indices pooled
+    into group g; member_counts[g] = len(member_channel_idx[g]).
+    """
+    if overlap_channels >= window_channels:
+        raise ValueError(
+            f"--channel-smooth-overlap ({overlap_channels}) must be < "
+            f"--channel-smooth-window ({window_channels})"
+        )
+
+    active_pos = channel_positions[active_channel_idx]
+    order = np.lexsort((active_pos[:, 0], active_pos[:, 1]))  # sort by y, tie-break x
+    sorted_idx = active_channel_idx[order]
+    sorted_y = active_pos[order, 1]
+    sorted_spike_times = spike_times_active[order]
+    n_active = sorted_idx.size
+
+    window = min(window_channels, n_active)
+    step = window - overlap_channels
+
+    starts = list(range(0, n_active - window + 1, step))
+    if not starts:
+        starts = [0]
+    tail_topped_up = False
+    tail_overlap = overlap_channels
+    if starts[-1] + window < n_active:
+        # Regular striding leaves the last (n_active - (starts[-1] + window))
+        # channels short of a full window -- rather than drop them, anchor
+        # one final window to the END so every active channel is covered.
+        # This can make its overlap with the previous window bigger than the
+        # requested overlap_channels (never smaller/dropped).
+        new_start = n_active - window
+        tail_overlap = (starts[-1] + window) - new_start
+        starts.append(new_start)
+        tail_topped_up = True
+
+    spike_times_grouped, member_channel_idx, member_counts, depth_center_um = [], [], [], []
+    for lo in starts:
+        hi = lo + window
+        spike_times_grouped.append(np.concatenate(sorted_spike_times[lo:hi]))
+        member_channel_idx.append(sorted_idx[lo:hi])
+        member_counts.append(hi - lo)
+        depth_center_um.append(float(sorted_y[lo:hi].mean()))
+
+    return (
+        np.asarray(spike_times_grouped, dtype=object),
+        member_channel_idx,
+        np.asarray(member_counts, dtype=int),
+        np.asarray(depth_center_um, dtype=float),
+        step,
+        tail_topped_up,
+        tail_overlap,
+    )
+
+
 def plot_drift_scatter(out_path, peak_times_abs, depths, title, fold_boundary_times):
     # All times here are ABSOLUTE (same convention as t_centers/fold_boundary_times
     # elsewhere in this script and as motion_obj.temporal_bins_s), not
@@ -284,12 +400,12 @@ def plot_motion_overlay(out_path, peak_times_abs, depths, motion_obj, fold_bound
     plt.close(fig)
 
 
-def make_xgb_estimator(args, eval_metric=None):
-    # Shared hyperparams so the diagnostic loss-curve fit (main()) uses the
-    # exact same XGB config as the production model built here.
-    from xgboost import XGBRegressor
-
-    kwargs = dict(
+def xgb_params(args):
+    # Single source of truth for XGB hyperparams (XGB is not exposed via CLI
+    # flags like the other models' knobs). Shared by make_xgb_estimator() --
+    # both the production and diagnostic loss-curve fits -- and by
+    # build_run_params()'s reproducibility dump, so the two can never drift.
+    return dict(
         objective="reg:squarederror",
         max_depth=3,
         n_estimators=200,
@@ -300,6 +416,12 @@ def make_xgb_estimator(args, eval_metric=None):
         random_state=args.seed,
         n_jobs=1,
     )
+
+
+def make_xgb_estimator(args, eval_metric=None):
+    from xgboost import XGBRegressor
+
+    kwargs = xgb_params(args)
     if eval_metric is not None:
         kwargs["eval_metric"] = eval_metric
     return XGBRegressor(**kwargs)
@@ -392,9 +514,10 @@ def plot_decoded_vs_observed(out_path, t_centers, y_true, y_pred, pc_cols, model
         axes = [axes]
 
     for i, ax in enumerate(axes):
+        r2 = r2_score(y_true[:, i], y_pred[:, i])
         ax.plot(t_centers, y_true[:, i], color="black", lw=0.8, label="Observed")
         ax.plot(t_centers, y_pred[:, i], color="tab:red", lw=0.8, alpha=0.9, label="Decoded")
-        ax.set_ylabel(pc_cols[i])
+        ax.set_ylabel(f"{pc_cols[i]}\n(R2={r2:.2f})")
         ax.grid(alpha=0.2)
         if i == 0:
             ax.legend(loc="upper right", fontsize=8)
@@ -499,6 +622,64 @@ def plot_firing_rate_heatmap(out_path, X, t_centers, fold_boundary_times):
     plt.close(fig)
 
 
+def plot_density_before_after(
+    out_path, active_channel_idx, channel_positions, active_channel_counts, duration_s,
+    group_member_channel_idx=None, group_depth_center_um=None,
+):
+    """Spike density along probe depth, before vs after channel smoothing --
+    same spirit as peak_detect_localise/spike_density_count.py's per-depth
+    rate strip: y = depth (um), x = spike rate (spikes/s), one horizontal bar
+    per depth resolved at each stage.
+
+    "Before" sums counts across active channels sharing the same y (this
+    probe has ~2 columns/depth row), at native ~row-pitch resolution.
+    "After" sums counts across each smoothing window's member channels, at
+    window resolution. This is the raw local rate for visualization -- a
+    different (unnormalized) quantity than the per-member-channel MEAN used
+    as the actual model feature (see group_channels_sliding), and NOT a
+    strict repartition of "before" when windows overlap (a channel's spikes
+    can then be counted in more than one window's bar).
+    """
+    active_y = channel_positions[active_channel_idx, 1]
+    unique_y = np.sort(np.unique(active_y))
+    row_pitch = float(np.min(np.diff(unique_y))) if unique_y.size > 1 else 20.0
+    row_rate = np.array([active_channel_counts[active_y == y].sum() for y in unique_y]) / duration_s
+
+    show_after = group_member_channel_idx is not None
+    fig, axes = plt.subplots(1, 2 if show_after else 1, figsize=(11 if show_after else 5.5, 8), sharey=True)
+    axes = np.atleast_1d(axes)
+
+    axes[0].barh(unique_y, row_rate, height=row_pitch * 0.9, color="steelblue", edgecolor="none")
+    axes[0].set_xlabel("Spike rate (spikes/s)")
+    axes[0].set_ylabel("Depth (um)")
+    axes[0].set_title(f"Before smoothing\n({unique_y.size} depth rows, ~{row_pitch:.0f}um pitch)")
+    axes[0].grid(alpha=0.2, axis="x")
+
+    if show_after:
+        idx_to_count = dict(zip(active_channel_idx.tolist(), active_channel_counts.tolist()))
+        group_rate = np.array(
+            [sum(idx_to_count[int(ch)] for ch in members) for members in group_member_channel_idx]
+        ) / duration_s
+        group_span_um = np.array(
+            [
+                max(float(np.ptp(channel_positions[members, 1])), row_pitch) if len(members) > 1 else row_pitch
+                for members in group_member_channel_idx
+            ]
+        )
+        axes[1].barh(group_depth_center_um, group_rate, height=group_span_um * 0.9, color="tab:orange", edgecolor="none")
+        axes[1].set_xlabel("Spike rate (spikes/s)")
+        axes[1].set_title(f"After smoothing\n({len(group_member_channel_idx)} windows)")
+        axes[1].grid(alpha=0.2, axis="x")
+
+    fig.suptitle(
+        "Spike density along probe depth: before vs after channel smoothing"
+        if show_after else "Spike density along probe depth (channel smoothing off)"
+    )
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
 def plot_xgb_loss_curves(out_path, curves, pc_cols, fold):
     """XGB's genuine per-boosting-round train vs held-out loss curve.
 
@@ -538,20 +719,22 @@ def plot_xgb_loss_curves(out_path, curves, pc_cols, fold):
     plt.close(fig)
 
 
-def plot_xgb_channel_importance(out_path, channel_importance, active_channel_idx):
-    """Per-channel XGB importance (summed over lags, averaged over folds+outputs).
+def plot_xgb_channel_importance(out_path, channel_importance, x_positions, x_label, bar_width=1.0):
+    """Per-channel (or per-depth-group) XGB importance, summed over lags and
+    averaged over folds+outputs.
 
-    Shows whether a handful of channels actually drive predictions, or
-    whether importance is smeared meaninglessly across all channels (which
+    Shows whether a handful of channels/groups actually drive predictions, or
+    whether importance is smeared meaninglessly across all of them (which
     would be consistent with a mostly-noise feature set).
 
-    Bars are placed at each channel's ORIGINAL probe index (active_channel_idx),
-    not its position in the (possibly dead-channel-filtered) feature matrix, so
-    gaps in the x-axis are visible where zero-spike channels were dropped.
+    x_positions/x_label are supplied by the caller so this reads correctly in
+    both modes: original probe channel index (gaps = dropped zero-spike
+    channels) when --channel-group-width-um is off, or depth-bin center in
+    microns when channel grouping is on.
     """
     fig, ax = plt.subplots(figsize=(14, 4))
-    ax.bar(active_channel_idx, channel_importance, color="tab:green", width=1.0)
-    ax.set_xlabel("Channel index (original probe index; gaps = dropped zero-spike channels)")
+    ax.bar(x_positions, channel_importance, color="tab:green", width=bar_width)
+    ax.set_xlabel(x_label)
     ax.set_ylabel("Mean importance\n(summed over lags, avg over folds+outputs)")
     ax.set_title("XGB feature importance by channel")
     ax.grid(alpha=0.2, axis="y")
@@ -660,7 +843,9 @@ def main():
             print(f"WARNING: localized peaks path {localized_peaks_path} not found -- skipping drift correction.")
 
     texture_pca_df = pd.read_pickle(args.behavior_df_path)
-    _metadata_df = pd.read_pickle(args.metadata_df_path)
+    # Loaded but not consumed downstream: reads it here purely to fail fast on a
+    # bad/unreadable --metadata-df-path before the long CV loop starts.
+    pd.read_pickle(args.metadata_df_path)
 
     pc_cols = [c.strip() for c in args.pc_cols.split(",") if c.strip()]
     missing_cols = [c for c in pc_cols if c not in texture_pca_df.columns]
@@ -747,13 +932,117 @@ def main():
     if dropped_channel_idx.size:
         print(f"Dropped channel indices: {dropped_channel_idx.tolist()}")
     spike_times_trim = spike_times_trim[active_channel_idx]
-    n_channels_active = active_channel_idx.size
+
+    channel_grouping_path = None
+    group_member_counts = None
+    window_channels_used = None
+    step_channels = None
+    tail_topped_up = None
+    tail_overlap = None
+    if args.channel_smooth_window > 0:
+        if args.channel_smooth_overlap >= args.channel_smooth_window:
+            raise ValueError(
+                f"--channel-smooth-overlap ({args.channel_smooth_overlap}) must be < "
+                f"--channel-smooth-window ({args.channel_smooth_window})"
+            )
+        if args.channel_smooth_window > active_channel_idx.size:
+            print(
+                f"WARNING: --channel-smooth-window ({args.channel_smooth_window}) exceeds the "
+                f"{active_channel_idx.size} active channels; using one window covering all of them."
+            )
+        (
+            spike_times_used,
+            group_member_channel_idx,
+            group_member_counts,
+            channel_x_positions,
+            step_channels,
+            tail_topped_up,
+            tail_overlap,
+        ) = group_channels_sliding(
+            spike_times_trim, active_channel_idx, channel_positions,
+            args.channel_smooth_window, args.channel_smooth_overlap,
+        )
+        n_channels_used = len(spike_times_used)
+        window_channels_used = int(np.max(group_member_counts))
+        channel_x_label = f"Depth bin center (um) -- {n_channels_used} windows"
+        channel_bar_width = float(np.median(np.diff(channel_x_positions))) if n_channels_used > 1 else 1.0
+        # For the human-readable "~Xum" estimate below only (not used in the
+        # actual windowing math, which is purely channel-count/index based):
+        # several channels can share a depth row (this probe has ~2 columns),
+        # so divide by the number of DISTINCT depths, not raw channel count.
+        unique_active_y = np.unique(channel_positions[active_channel_idx, 1])
+        mean_pitch_um = (
+            float(np.ptp(unique_active_y)) / max(unique_active_y.size - 1, 1)
+        )
+        print(
+            f"Channel smoothing: {active_channel_idx.size:,} active channels -> "
+            f"{n_channels_used:,} windows "
+            f"(window={window_channels_used} channels [~{window_channels_used * mean_pitch_um:.0f}um], "
+            f"step={step_channels} channels [~{step_channels * mean_pitch_um:.0f}um], "
+            f"requested overlap={args.channel_smooth_overlap} channels)."
+        )
+        if tail_topped_up:
+            print(
+                f"NOTE: {active_channel_idx.size:,} active channels isn't an exact multiple of the "
+                f"step -- a final window was anchored to the end so the last channels aren't dropped. "
+                f"That window overlaps its neighbor by {tail_overlap} channels, not the requested "
+                f"{args.channel_smooth_overlap} (window {n_channels_used - 1} of {n_channels_used}, 0-indexed)."
+            )
+        channel_grouping_path = out_dir / "channel_grouping.npz"
+        np.savez_compressed(
+            channel_grouping_path,
+            channel_smooth_window=args.channel_smooth_window,
+            channel_smooth_overlap=args.channel_smooth_overlap,
+            step_channels=step_channels,
+            tail_topped_up=tail_topped_up,
+            tail_overlap=tail_overlap,
+            n_active_channels_input=active_channel_idx.size,
+            n_groups=n_channels_used,
+            group_member_channel_idx=np.array(group_member_channel_idx, dtype=object),
+            group_member_counts=group_member_counts,
+            group_depth_center_um=channel_x_positions,
+            group_spike_times_sec=spike_times_used,
+        )
+        print(f"Saved channel grouping -> {channel_grouping_path}")
+    else:
+        spike_times_used = spike_times_trim
+        n_channels_used = active_channel_idx.size
+        channel_x_positions = active_channel_idx
+        channel_x_label = "Channel index (original probe index; gaps = dropped zero-spike channels)"
+        channel_bar_width = 1.0
+
+    # Single source of truth for every channel-stage fact -- both raw request
+    # (--channel-smooth-window/-overlap, already in cli_args) and what was
+    # actually RESOLVED at runtime (achieved window/step, whether the tail
+    # needed topping up, and by how much). Written into both run_params.json
+    # (saved early, survives a mid-run crash) and cv_summary.json (saved at
+    # the end) so this doesn't only live in stdout/channel_grouping.npz.
+    channel_info = {
+        "total": int(n_channels),
+        "active": int(active_channel_idx.size),
+        "dropped_zero_spikes": dropped_channel_idx.tolist(),
+        "channel_smooth_window_requested": args.channel_smooth_window,
+        "channel_smooth_overlap_requested": (
+            args.channel_smooth_overlap if args.channel_smooth_window > 0 else None
+        ),
+        "channel_smooth_window_used": window_channels_used,
+        "channel_smooth_step_used": step_channels,
+        "tail_topped_up": tail_topped_up,
+        "tail_overlap": tail_overlap,
+        "feature_channels": int(n_channels_used),
+        "channel_grouping_path": str(channel_grouping_path) if channel_grouping_path else None,
+    }
 
     beh_keep = (beh_t >= t_start) & (beh_t < t_end)
     beh_t_trim = beh_t[beh_keep]
     beh_outputs_trim = beh_outputs[beh_keep]
 
-    neural_data = bin_spikes(spike_times_trim, args.dt, t_start, t_end)
+    neural_data = bin_spikes(spike_times_used, args.dt, t_start, t_end)
+    if group_member_counts is not None:
+        # Convert each group's summed per-bin count into a MEAN per-member-
+        # channel count, so a group's value is comparable regardless of how
+        # many raw channels happened to feed it (see group_channels_sliding).
+        neural_data = neural_data / group_member_counts[None, :]
     y_binned, t_edges = bin_output_safe(beh_outputs_trim, beh_t_trim, args.dt, t_start, t_end)
 
     valid_mask = np.all(np.isfinite(y_binned), axis=1)
@@ -787,7 +1076,9 @@ def main():
     if unknown:
         raise ValueError(f"Unknown/unavailable models requested: {unknown}. Available: {list(available_models)}")
 
-    run_params = build_run_params(args, pc_cols, selected, motion_path, drift_corrected, localized_peaks_path)
+    run_params = build_run_params(
+        args, pc_cols, selected, motion_path, drift_corrected, localized_peaks_path, channel_info
+    )
     with open(out_dir / "run_params.json", "w", encoding="utf-8") as f:
         json.dump(run_params, f, indent=2)
     print(f"Saved run params    -> {out_dir / 'run_params.json'}")
@@ -797,6 +1088,13 @@ def main():
     fold_boundary_times = t_centers[fold_starts[1:]]  # internal boundaries only
 
     plot_firing_rate_heatmap(figs_dir / "firing_rate_heatmap.png", X, t_centers, fold_boundary_times)
+
+    plot_density_before_after(
+        figs_dir / "channel_density_before_after_smoothing.png",
+        active_channel_idx, channel_positions, channel_spike_counts[active_channel_idx], (t_end - t_start),
+        group_member_channel_idx=group_member_channel_idx if args.channel_smooth_window > 0 else None,
+        group_depth_center_um=channel_x_positions if args.channel_smooth_window > 0 else None,
+    )
 
     plot_drift_scatter(
         figs_dir / "drift_01_raw_scatter.png",
@@ -841,11 +1139,7 @@ def main():
                 "behavior": [beh_start_raw, beh_end_raw],
                 "trimmed_overlap": [t_start, t_end],
             },
-            "channels": {
-                "total": int(n_channels),
-                "active": int(n_channels_active),
-                "dropped_zero_spikes": dropped_channel_idx.tolist(),
-            },
+            "channels": channel_info,
             "shapes": {"X": list(X.shape), "y": list(y.shape), "X_lagged": list(X_lagged.shape)},
         },
         "models": {},
@@ -899,10 +1193,10 @@ def main():
                 fitted_xgb = model.named_steps["xgb"]
                 fold_importance = np.array(
                     [est.feature_importances_ for est in fitted_xgb.estimators_]
-                )  # (n_outputs, n_lags_total * n_channels_active)
+                )  # (n_outputs, n_lags_total * n_channels_used)
                 per_output_channel_importance = fold_importance.reshape(
-                    len(pc_cols), n_lags_total, n_channels_active
-                ).sum(axis=1)  # (n_outputs, n_channels_active)
+                    len(pc_cols), n_lags_total, n_channels_used
+                ).sum(axis=1)  # (n_outputs, n_channels_used)
                 xgb_channel_importances.append(per_output_channel_importance)
 
         overall = r2_score(y, oof_pred, multioutput="raw_values")
@@ -941,7 +1235,11 @@ def main():
         if name == "XGB" and xgb_channel_importances:
             mean_channel_importance = np.mean(np.stack(xgb_channel_importances, axis=0), axis=(0, 1))
             plot_xgb_channel_importance(
-                figs_dir / "XGB_channel_importance.png", mean_channel_importance, active_channel_idx
+                figs_dir / "XGB_channel_importance.png",
+                mean_channel_importance,
+                channel_x_positions,
+                channel_x_label,
+                bar_width=channel_bar_width,
             )
 
         summary["models"][name] = {
