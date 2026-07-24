@@ -1,16 +1,14 @@
 {
 	"folders": [
 		{
-			"name": "gongt",
 			"path": ".."
 		},
 		{
-			"name": "ephys",
-			"path": "../../../nexus/posix0/MBR-neuralsystems/ephys"
+			"path": "../../../data/0_collaboration/ceph_phys"
 		},
 		{
-			"name": "gongt",
-			"path": "../../../ptmp/gongt"
+			"path": "../../../data/0_collaboration/sepia_filming"
 		}
-	]
+	],
+	"settings": {}
 }

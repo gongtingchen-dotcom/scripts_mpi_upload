@@ -1,0 +1,18 @@
+Log file: /gpfs/laur/personal/gongt/scripts/theo_decoding/logs/theo_decode_cv_20260721_122020.log
+Start time: 2026-07-21T12:20:20+00:00
+Host: lnx-wks-001
+Python: /gpfs/laur/personal/gongt/micromamba/envs/decoding/bin/python
+Running local shell execution.
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1784636428.313913   21085 cpu_feature_guard.cc:227] This TensorFlow binary is optimized to use available CPU instructions in performance-critical operations.
+To enable the following instructions: AVX2 FMA, in other operations, rebuild TensorFlow with the appropriate compiler flags.
+/gpfs/laur/personal/gongt/micromamba/envs/decoding/lib/python3.14/site-packages/Neural_Decoding/nonlinear.py:20: RankWarning: Polyfit may be poorly conditioned
+  self.p_ = np.polyfit(y_pred, y, self.degree)
+/gpfs/laur/personal/gongt/micromamba/envs/decoding/lib/python3.14/site-packages/Neural_Decoding/nonlinear.py:20: RankWarning: Polyfit may be poorly conditioned
+  self.p_ = np.polyfit(y_pred, y, self.degree)
+/gpfs/laur/personal/gongt/micromamba/envs/decoding/lib/python3.14/site-packages/Neural_Decoding/nonlinear.py:20: RankWarning: Polyfit may be poorly conditioned
+  self.p_ = np.polyfit(y_pred, y, self.degree)
+/gpfs/laur/personal/gongt/micromamba/envs/decoding/lib/python3.14/site-packages/Neural_Decoding/nonlinear.py:20: RankWarning: Polyfit may be poorly conditioned
+  self.p_ = np.polyfit(y_pred, y, self.degree)
+/gpfs/laur/personal/gongt/micromamba/envs/decoding/lib/python3.14/site-packages/Neural_Decoding/nonlinear.py:20: RankWarning: Polyfit may be poorly conditioned
+  self.p_ = np.polyfit(y_pred, y, self.degree)
