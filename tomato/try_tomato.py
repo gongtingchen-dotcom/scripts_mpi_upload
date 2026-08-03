@@ -39,6 +39,86 @@ def plot_dgm(t,tau=0): ### to plot persistence diagram
     plt.ylabel('y')
 
 # %% [markdown]
+# **DRIFT CORRECTION HELPERS**
+#
+# Same approach as `theo_decoding/theo_decode_cv.py`: each peak's position is
+# corrected by the motion estimate at that position's depth and the peak's
+# time, then snapped to whichever channel is now physically nearest. The
+# depth fed into correction is the peak's own continuous LOCALIZED depth
+# (from `localized_peaks_mt_raw.npy`), not the discrete depth of its home
+# channel. The x position is kept at the home channel's x (localized x is
+# noisy across shanks/columns) so the snap step only has to resolve depth.
+
+# %%
+def get_corrected_positions(peak_times_sec, positions, motion_obj):
+    """positions: (n_peaks, 2) [x, y] home-channel location of each peak.
+    peak_times_sec must already be in the recording's ABSOLUTE time frame
+    (matching motion_obj.temporal_bins_s), not relative to t_start.
+    """
+    if motion_obj is None:
+        return positions.copy()
+    depths = positions[:, 1]
+    shifts = motion_obj.get_displacement_at_time_and_depth(peak_times_sec, depths)
+    corrected = positions.copy()
+    corrected[:, 1] = depths - shifts
+    return corrected
+
+
+def snap_to_nearest_channel(positions, channel_positions, chunk_size=10000):
+    """Snap each (x, y) position to the nearest channel (no exclusions)."""
+    if len(positions) == 0:
+        return np.empty((0,), dtype=int)
+    snapped_ch_idx = np.empty(len(positions), dtype=int)
+    for start in range(0, len(positions), chunk_size):
+        stop = min(start + chunk_size, len(positions))
+        chunk = positions[start:stop]
+        diff = chunk[:, None, :] - channel_positions[None, :, :]
+        dist2 = np.sum(diff * diff, axis=2)
+        snapped_ch_idx[start:stop] = np.argmin(dist2, axis=1)
+    return snapped_ch_idx
+
+
+def plot_drift_scatter(out_path, peak_times_abs, depths, title, fold_boundary_times=()):
+    fig, ax = plt.subplots(figsize=(20, 7))
+    ax.scatter(peak_times_abs, depths, s=1, color="k", alpha=0.02, rasterized=True)
+    for bt in fold_boundary_times:
+        ax.axvline(bt, color="tab:red", lw=0.8, ls=":")
+    ax.set_xlabel("Time (s)")
+    ax.set_ylabel("Depth (um)")
+    ax.set_title(title)
+    ax.grid(alpha=0.15)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_motion_overlay(out_path, peak_times_abs, depths, motion_obj, fold_boundary_times=()):
+    fig, ax = plt.subplots(figsize=(20, 7))
+    ax.scatter(peak_times_abs, depths, s=1, color="k", alpha=0.02, rasterized=True, label="Peaks (localized depth)")
+
+    colors = ["red", "royalblue", "darkgreen", "darkorange", "deeppink", "saddlebrown", "teal"]
+    t_bins_abs = motion_obj.temporal_bins_s[0]  # already absolute, same frame as peak_times_abs
+    d_bins = motion_obj.spatial_bins_um
+    displ = motion_obj.displacement[0]
+    for di, start_d in enumerate(d_bins):
+        drift_line = start_d + displ[:, di]
+        ax.plot(
+            t_bins_abs, drift_line,
+            color=colors[di % len(colors)], lw=1.0, alpha=0.8,
+            label="DREDge motion" if di == 0 else "",
+        )
+    for bt in fold_boundary_times:
+        ax.axvline(bt, color="black", lw=0.8, ls=":")
+    ax.set_xlabel("Time (s)")
+    ax.set_ylabel("Depth (um)")
+    ax.set_title("Raw peak depths + motion (DREDge) overlay")
+    ax.legend(loc="upper right", markerscale=8, fontsize=8)
+    ax.grid(alpha=0.15)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+# %% [markdown]
 # **TIME WINDOW CONFIGURATION**
 
 # %%
@@ -47,6 +127,16 @@ import argparse as _ap
 _parser = _ap.ArgumentParser(description='Tomato spike clustering', add_help=True)
 _parser.add_argument('--sample_start', type=int, default=None)
 _parser.add_argument('--sample_end',   type=int, default=None)
+_parser.add_argument('--motion_path', type=str, default=None,
+                      help="SpikeInterface Motion folder (si.Motion.load()). Defaults to "
+                           "<folder_name>/motion_estimates/motion_dredge inside data_path.")
+_parser.add_argument('--localized_peaks_path', type=str, default=None,
+                      help="Structured .npy with per-peak localized (x, y, z, alpha), index-aligned "
+                           "1:1 with peaks_combined2_sorted.npy. Defaults to "
+                           "<folder_name>/localized_peaks_mt_raw.npy inside data_path.")
+_parser.add_argument('--skip_drift_correction', action='store_true',
+                      help="Skip motion/drift correction and use each peak's originally detected "
+                           "channel_index as-is.")
 _args, _ = _parser.parse_known_args()
 
 sample_start = _args.sample_start if _args.sample_start is not None else int(os.environ.get('SAMPLE_START', 0))
@@ -58,7 +148,7 @@ elif os.environ.get('SAMPLE_END') is not None:
 else:
     sample_end_env = None
 
-data_path = '/ptmp/gongt/GLC7189/GLC7189_g_g1/preprocessed'
+data_path = '/nexus/posix0/MBR-neuralsystems/ephys/GLC7189/GLC7189_c_g0/preprocessed'
 rec = si.load(data_path)
 n_samples_total = rec.get_num_samples()
 
@@ -78,12 +168,13 @@ print(f'Sample range: [{sample_start:,}, {sample_end:,})  |  Suffix: {output_suf
 
 # %%
 # ── Create plots output directory ────────────────────────────────────────────
-folder_name = 'thresholding_peaks'
+folder_name = 'thresholding_peaks_3.5'
 peaks_path = os.path.join(data_path, folder_name, 'peaks_combined2_sorted.npy')
 plots_dir = os.path.join(data_path, folder_name, f'tomato_plots2{output_suffix}')
 os.makedirs(plots_dir, exist_ok=True)
 
 rec = si.load(data_path)
+channel_positions = rec.get_channel_locations()
 rec
 
 # %%
@@ -132,6 +223,86 @@ print(f'Total spikes in recording: {n_spikes_full:,}')
 print(f'Spikes in this window: {n_spikes:,}  ({100*n_spikes/n_spikes_full:.1f}%)')
 print(f'Channels: {n_chans}')
 
+# %% [markdown]
+# **DRIFT CORRECTION**
+
+# %%
+# ── Motion/drift correction: reassign each spike's channel_index based on ────
+# its motion-corrected depth (see helpers defined above). Downstream code
+# reads peaks['channel_index'], so mutating it in place here means every
+# later step (window assignment, feature extraction, cluster relabeling)
+# automatically uses the corrected channel.
+motion = None
+motion_path = None
+localized_peaks_path = None
+drift_corrected = False
+channel_index_raw = peaks['channel_index'].copy()
+
+if not _args.skip_drift_correction:
+    motion_path = _args.motion_path if _args.motion_path else os.path.join(
+        data_path, folder_name, 'motion_estimates', 'motion_dredge')
+    localized_peaks_path = _args.localized_peaks_path if _args.localized_peaks_path else os.path.join(
+        data_path, folder_name, 'localized_peaks_mt_raw.npy')
+
+    if os.path.exists(motion_path) and os.path.exists(localized_peaks_path):
+        motion = si.Motion.load(motion_path)
+        print(f'Loaded motion estimate: {motion_path}')
+        localized_peaks_full = np.load(localized_peaks_path, allow_pickle=True)
+        if len(localized_peaks_full) != len(peaks_full):
+            raise ValueError(
+                f'localized_peaks_path has {len(localized_peaks_full):,} rows but '
+                f'peaks_path has {len(peaks_full):,}; they must be index-aligned '
+                '(same peak set, same order).'
+            )
+        localized_peaks = localized_peaks_full[peaks_mask]
+        print(f'Loaded localized peaks: {localized_peaks_path}')
+
+        time_offset = float(rec.get_times()[0])
+        peak_times_sec = sp_global.astype(np.float64) / fs + time_offset
+        localized_depths = localized_peaks['y'].astype(np.float64)
+        raw_positions = np.column_stack([
+            channel_positions[channel_index_raw, 0],   # x: keep home channel's x
+            localized_depths,                            # y: localized depth
+        ])
+        corrected_positions = get_corrected_positions(peak_times_sec, raw_positions, motion)
+        corrected_depths = corrected_positions[:, 1]
+        channel_index_corrected = snap_to_nearest_channel(corrected_positions, channel_positions)
+
+        n_reassigned = int(np.sum(channel_index_corrected != channel_index_raw))
+        print(f'Drift correction: {n_reassigned:,}/{len(channel_index_corrected):,} peaks '
+              f'({100 * n_reassigned / len(channel_index_corrected):.1f}%) reassigned to a different channel.')
+        assigned_dist = np.linalg.norm(
+            corrected_positions - channel_positions[channel_index_corrected], axis=1)
+        print(f'Post-snap distance to assigned channel: median={np.median(assigned_dist):.2f}um, '
+              f'mean={np.mean(assigned_dist):.2f}um, max={np.max(assigned_dist):.2f}um.')
+
+        peaks['channel_index'] = channel_index_corrected
+        drift_corrected = True
+
+        # ── Verification plots ────────────────────────────────────────────
+        plot_drift_scatter(
+            os.path.join(plots_dir, 'drift_01_raw_scatter.png'),
+            peak_times_sec, localized_depths,
+            'Raw peak depths (localized, uncorrected)',
+        )
+        plot_motion_overlay(
+            os.path.join(plots_dir, 'drift_02_motion_overlay.png'),
+            peak_times_sec, localized_depths, motion,
+        )
+        plot_drift_scatter(
+            os.path.join(plots_dir, 'drift_03_corrected_scatter.png'),
+            peak_times_sec, corrected_depths,
+            'Motion-corrected peak depths (localized depth, before channel-snap)',
+        )
+        print(f'Saved drift verification plots to {plots_dir}')
+    elif not os.path.exists(motion_path):
+        print(f'WARNING: motion path {motion_path} not found -- skipping drift correction.')
+    else:
+        print(f'WARNING: localized peaks path {localized_peaks_path} not found -- skipping drift correction.')
+else:
+    print('Drift correction skipped (--skip_drift_correction).')
+
+# %%
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f'Using: {device}')
 noise   = get_noise_levels(rec, return_scaled=True)          # (n_chans,)
@@ -174,7 +345,7 @@ chunk_s     = 60        # seconds per recording time-batch
 chunk_samp  = int(chunk_s * fs)
 gpu_sub     = 2000      # spikes per GPU mini-batch (avoids VRAM OOM)
 
-locs_xy    = rec.get_channel_locations()                        # (C, 2)
+locs_xy    = channel_positions                                  # (C, 2)
 depth_rank = np.argsort(locs_xy[:, 1])
 rank_of_ch = np.empty(n_chans, dtype=np.int64)
 rank_of_ch[depth_rank] = np.arange(n_chans)
@@ -242,6 +413,9 @@ _params = dict(
     tomato_impl      = 'hnsw',
     tomato_random_seed = 42,
     n_jobs           = n_jobs,
+    drift_corrected  = drift_corrected,
+    motion_path      = motion_path,
+    localized_peaks_path = localized_peaks_path,
     timestamp        = _dt.datetime.now().isoformat(),
 )
 _params_path = os.path.join(save_dir, 'params.json')

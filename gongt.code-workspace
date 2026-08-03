@@ -8,6 +8,9 @@
 		},
 		{
 			"path": "../../../data/0_collaboration/sepia_filming"
+		},
+		{
+			"path": "../../../nexus/posix0/MBR-neuralsystems/ephys"
 		}
 	],
 	"settings": {}
