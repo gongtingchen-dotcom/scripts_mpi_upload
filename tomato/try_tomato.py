@@ -127,6 +127,11 @@ import argparse as _ap
 _parser = _ap.ArgumentParser(description='Tomato spike clustering', add_help=True)
 _parser.add_argument('--sample_start', type=int, default=None)
 _parser.add_argument('--sample_end',   type=int, default=None)
+_parser.add_argument('--data_path', type=str,
+                      default='/nexus/posix0/MBR-neuralsystems/ephys/GLC7189/GLC7189_c_g0/preprocessed',
+                      help="Path to the SpikeInterface-preprocessed recording folder (si.load()able). "
+                           "peaks/motion/localized-peaks paths are derived from this + --folder_name "
+                           "unless overridden explicitly below.")
 _parser.add_argument('--motion_path', type=str, default=None,
                       help="SpikeInterface Motion folder (si.Motion.load()). Defaults to "
                            "<folder_name>/motion_estimates/motion_dredge inside data_path.")
@@ -148,7 +153,7 @@ elif os.environ.get('SAMPLE_END') is not None:
 else:
     sample_end_env = None
 
-data_path = '/nexus/posix0/MBR-neuralsystems/ephys/GLC7189/GLC7189_c_g0/preprocessed'
+data_path = _args.data_path
 rec = si.load(data_path)
 n_samples_total = rec.get_num_samples()
 

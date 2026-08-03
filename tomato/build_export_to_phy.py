@@ -39,17 +39,20 @@ import spikeinterface.full as si
 
 # Path to the recording that was sorted
 RECORDING_PATH = (
-    "D:\GLC7189_c_g0\preprocessed"
+    "/nexus/posix0/MBR-neuralsystems/ephys/GLC7189/GLC7189_c_g0/preprocessed"
 )
 
-# Path to SpikeInterface sorting (contains the spike times/clusters)
+# Path to SpikeInterface sorting (contains the spike times/clusters) --
+# matches the tomato_sorting2_s{start}_e{end} folder try_tomato.py writes
+# (see run_try_tomato.sh; with no SAMPLE_START/SAMPLE_END override, that's
+# the full recording, samples 0..86545524).
 SORTING_PATH = (
-    "D:\GLC7189_c_g0/tomato_sorting_slaymerge"
+    RECORDING_PATH + "/tomato_sorting2_s0_e86545524"
 )
 
 # Path to export_to_phy folder (will be rebuilt)
 EXPORT_TO_PHY_DIR = (
-    "D:\GLC7189_c_g0/tomato_sorting_slaymerge\export_to_phy"
+    SORTING_PATH + "/export_to_phy"
 )
 
 # Target number of channels per unit neighbourhood for PC/template computation.
@@ -76,7 +79,7 @@ JOB_KWARGS = dict(n_jobs=12, chunk_duration="1s", progress_bar=True)
 
 # Skip PC feature computation entirely — phy feature view will be blank but everything
 # else (templates, amplitudes, waveforms) works fine.  Set True to skip the slow step.
-SKIP_PC_FEATURES = False
+SKIP_PC_FEATURES = True
 
 # =====================================================================
 #  END OF USER CONFIGURATION

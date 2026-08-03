@@ -8,15 +8,19 @@ functions this script needs (x_correlogram, calc_xcorr_sig, slay.plot,
 slay.stages.accept_all_merges).
 
 STAGES (each gated by a RUN_* flag below):
-  1. build_analyzer   - sparse SortingAnalyzer (sparsity mask only, from peaks file)
-  2. label_clusters   - SNR / ContamPct / ISI -> cluster_group.tsv (good/mua/noise)
-  3. build_metrics    - mean waveforms, cosine similarity, phy template files,
-                         per-pair XCorr metrics table
-  4. find_merges      - connected-components + trim + progressive-test merge groups
-                         -> old2new.json / new2old.json
-  5. plot_merges      - waveform/correlogram QC figures, filters JSONs to
-                         label-verified "good" merges only
-  6. accept_merges    - apply merges to spike arrays via slay (destructive)
+  1. build_analyzer     - sparse SortingAnalyzer (sparsity mask only, from peaks file)
+  2. label_clusters     - SNR / ContamPct / ISI -> cluster_group.tsv (good/mua/noise)
+  3. build_metrics      - mean waveforms, cosine similarity, phy template files,
+                           per-pair XCorr metrics table
+  4. find_merges        - connected-components + trim + progressive-test merge groups
+                           -> old2new.json / new2old.json
+  5. plot_merges        - waveform/correlogram QC figures, filters JSONs to
+                           label-verified "good" merges only
+  5b. plot_all_clusters - (optional) waveform+ACG+similar-clusters QC figure for
+                           EVERY cluster, not just merge candidates -- see
+                           CLUSTER_PLOTS SETTINGS below. Ported from
+                           try_merge_selfdbuild.py's RUN_PLOT_ALL_PLOTS stage.
+  6. accept_merges      - apply merges to spike arrays via slay (destructive)
 
 Each stage, when its RUN_* flag is False, tries to load its outputs from disk
 instead of recomputing. If a flag is False but the cached outputs are missing,
@@ -40,6 +44,16 @@ Bug fixes carried over from try_merge_selfdbuild.py:
     (scattered from the compact good+mua matrix), matching what phy's loader
     asserts. Previously it was saved at the compact size, which made phy's
     `AssertionError: self.similar_templates.shape == (...)` fail.
+
+PERFORMANCE (see PERFORMANCE SETTINGS below): label_clusters' ContamPct/ISI
+loop and compute_pair_metrics' per-pair XCorr loop can each be parallelized
+across processes (N_LABEL_WORKERS / N_METRICS_WORKERS), and
+compute_similarity_matrix's cosine-similarity matmul can run on GPU via torch
+(USE_GPU_SIMILARITY, falls back to CPU automatically if no CUDA device is
+available). All ported from the HPC-scale try_merge_selfdbuild_1.py; default
+to off/0 (serial CPU), so behavior matches this file's previous version
+unless explicitly opted into. Same output either way -- these only affect
+wall-clock time.
 """
 
 # %% [markdown]
@@ -94,12 +108,16 @@ RUN_TAG        = "run6"
 # False = reuse cached outputs from disk if present; if they're missing, the
 #         stage computes them anyway (so a False flag never hard-fails a
 #         fresh run — it's just "don't force a recompute").
-RUN_BUILD_ANALYZER   = True    # (re)build sparse SortingAnalyzer
-RUN_LABEL_CLUSTERS   = True    # compute SNR / ContamPct / ISI -> cluster_group.tsv
-RUN_BUILD_METRICS    = True    # mean waveforms + similarity + phy template files + pair metrics
-RUN_MERGE            = False   # find merge groups -> old2new.json / new2old.json
-RUN_PLOT_MERGES      = False   # render waveform / correlogram QC figures
-RUN_ACCEPT_MERGES    = False   # apply accepted merges to spike arrays (DESTRUCTIVE)
+RUN_BUILD_ANALYZER    = True    # (re)build sparse SortingAnalyzer
+RUN_LABEL_CLUSTERS    = True    # compute SNR / ContamPct / ISI -> cluster_group.tsv
+RUN_BUILD_METRICS     = True    # mean waveforms + similarity + phy template files + pair metrics
+RUN_MERGE             = False   # find merge groups -> old2new.json / new2old.json
+RUN_PLOT_MERGES       = False   # render waveform / correlogram QC figures
+RUN_PLOT_ALL_CLUSTERS = False   # render waveform+ACG+similar-clusters QC figure for EVERY
+                                # cluster, not just merge candidates (contrast with
+                                # RUN_PLOT_MERGES, which only covers pairs find_merges flagged) --
+                                # see CLUSTER_PLOTS SETTINGS below
+RUN_ACCEPT_MERGES     = False   # apply accepted merges to spike arrays (DESTRUCTIVE)
 
 # =====================================================================
 #  SPARSE ANALYZER SETTINGS  (only used when the analyzer is (re)built)
@@ -109,12 +127,45 @@ SAMPLES_BEFORE       = 30    # -> pre_samples  = 30 @ 30 kHz
 SAMPLES_AFTER        = 35    # -> post_samples = 35 @ 30 kHz
 MAX_SPIKES_PER_UNIT  = 1000  # for labelling waveform means
 
+# =====================================================================
+#  PERFORMANCE SETTINGS  (parallel/GPU options -- ported from the HPC-scale
+#  try_merge_selfdbuild_1.py. Correctness-neutral: same computation either
+#  way, these only affect wall-clock time. All default to "off" so behavior
+#  matches this file's previous (purely serial CPU) version unless you
+#  explicitly opt in.)
+# =====================================================================
+USE_GPU_SIMILARITY = False  # cosine-similarity matmul in compute_similarity_matrix: run on
+                            # GPU via torch/cuBLAS (falls back to CPU numpy automatically if
+                            # no CUDA device is available) instead of CPU numpy. Worth it once
+                            # n_sim (good+mua units) is large -- ~100x faster on an A100 at
+                            # n_sim ~50k; negligible difference at a few hundred units.
+N_LABEL_WORKERS    = 0      # ProcessPoolExecutor workers for the per-cluster ContamPct/ISI
+                            # loop in label_clusters. 0 = serial (old behavior); > 0 = that
+                            # many worker processes (try_merge_selfdbuild_1.py used up to 64).
+N_METRICS_WORKERS  = 0      # ProcessPoolExecutor workers for the per-pair XCorr metrics loop
+                            # in compute_pair_metrics. 0 = serial (old behavior); > 0 = that
+                            # many worker processes.
+
+# =====================================================================
+#  CLUSTER_PLOTS SETTINGS  (only used when RUN_PLOT_ALL_CLUSTERS=True)
+# =====================================================================
+CLUSTER_PLOTS_MIN_SPIKES = 2     # skip clusters with fewer spikes (0 = plot all)
+CLUSTER_PLOTS_BATCH_SIZE = 5000  # clusters extracted per recording pass (only when MEAN_ONLY=False)
+                                 #   memory ~ BATCH x MAX_SPIKES_FOR_PLOT x wf_len x n_disp_ch x 4B
+CLUSTER_PLOTS_SIM_THRESH = 0.9   # similarity threshold for listing similar clusters in the info panel
+CLUSTER_PLOTS_MEAN_ONLY  = True  # True  -> plot mean waveform only (no individual traces);
+                                 #          all data already in RAM -- zero recording I/O.
+                                 # False -> also plot individual spike traces (requires scanning
+                                 #          the recording in batches -- much slower).
+N_PLOT_WORKERS           = 0     # parallel workers for figure rendering (0 = os.cpu_count())
+
 PHY_DIR      = Path(PHY_DIR).resolve()
 ANALYZER_DIR = Path(ANALYZER_DIR).resolve()
 SORTING_DIR  = Path(SORTING_DIR).resolve()
 OUT_DIR      = PHY_DIR / RUN_TAG
 PLOTS_DIR    = OUT_DIR / "merges"
 REJECTED_DIR = PLOTS_DIR / "rejected"
+CLUSTER_PLOTS_DIR = ANALYZER_DIR / "cluster_plots"
 # OUT_DIR/PLOTS_DIR are created in main() (after spike arrays are confirmed to
 # exist), so PHY_DIR isn't pre-created here — that would skip the
 # build-from-sorting bootstrap step.
@@ -454,6 +505,31 @@ def _connected_components(adjacency, node_ids, min_size=2):
 # #### Stage 2: label_clusters — SNR / ContamPct / ISI -> cluster_group.tsv
 
 # %%
+def _contam_isi_one(args):
+    """Compute ContamPct (R12) and ISI violation rate for a single cluster.
+    Module-level (not a closure) so it's picklable for ProcessPoolExecutor --
+    see label_clusters' n_workers path. Ported from try_merge_selfdbuild_1.py.
+
+    args: (idx, st_sec_slice, st_slice, tbin, isi_ref_samples)
+      idx          -- position in all_cluster_ids (returned so the caller can scatter results)
+      st_sec_slice -- spike times in seconds for this cluster (1-D float64 array)
+      st_slice     -- spike times in samples for this cluster (1-D int/float array)
+      tbin         -- CCG bin width in seconds
+      isi_ref      -- ISI refractory period in samples
+    """
+    idx, st_sec_slice, st_slice, tbin, isi_ref = args
+    from kilosort.CCG import check_CCG as _check_CCG
+    st_sec_sorted = np.sort(st_sec_slice)
+    contam_v = 0.0
+    if len(st_sec_sorted) > 10 and (st_sec_sorted[-1] - st_sec_sorted[0]) > 0:
+        _, _, contam_v = _check_CCG(st_sec_sorted, tbin=tbin)
+    isi_v = 0.0
+    if len(st_slice) > 1:
+        isis = np.diff(np.sort(st_slice))
+        isi_v = float((isis < isi_ref).sum()) / len(isis)
+    return idx, contam_v, isi_v
+
+
 def label_clusters(
     spike_times, spike_clusters, all_cluster_ids, rec, noise_levels,
     sparsity_mask,
@@ -462,6 +538,7 @@ def label_clusters(
     seed=0,
     contam_tbin_ms=1.5,
     isi_ref_ms=1.5,
+    n_workers=0,
 ):
     """
     Compute SNR, ContamPct, and ISI violation rate for every cluster, assign
@@ -491,6 +568,12 @@ def label_clusters(
         The refractory windows tested are ±1..10 × tbin.  Default 1.5 ms
         gives a maximum window of ±15 ms.  The lag-0 bin (double-spikes)
         is excluded by design (KiloSort convention).
+    n_workers : int
+        0 (default) computes ContamPct/ISI for every cluster serially, same
+        as before. > 0 dispatches the per-cluster loop to that many
+        ProcessPoolExecutor workers instead (ported from
+        try_merge_selfdbuild_1.py) — same values either way, just faster at
+        large cluster counts.
     isi_ref_ms : float
         Refractory period threshold (ms) for the ISI violation rate saved
         as cluster_isi_violation.tsv.  Fraction of consecutive spike-pair
@@ -611,17 +694,38 @@ def label_clusters(
 
         # Reuse the pre-sorted grouping built above — no per-cluster full scans.
         st_sec_grp = st_grp.astype(np.float64) / fs
-        for idx, clu in enumerate(tqdm(all_cluster_ids, desc="ContamPct/ISI")):
-            gi = uid_to_g.get(int(clu), -1)
-            if gi < 0:
-                continue
-            s, e = int(ubounds_g[gi]), int(ubounds_g[gi + 1])
-            st_clu = np.sort(st_sec_grp[s:e])
-            if len(st_clu) > 10 and (st_clu.max() - st_clu.min()) > 0:
-                _, _, contam_all[idx] = check_CCG(st_clu, tbin=tbin)
-            if e - s > 1:
-                isis = np.diff(np.sort(st_grp[s:e]))
-                isi_viol_all[idx] = float((isis < isi_ref).sum()) / len(isis)
+        if n_workers <= 0:
+            for idx, clu in enumerate(tqdm(all_cluster_ids, desc="ContamPct/ISI")):
+                gi = uid_to_g.get(int(clu), -1)
+                if gi < 0:
+                    continue
+                s, e = int(ubounds_g[gi]), int(ubounds_g[gi + 1])
+                st_clu = np.sort(st_sec_grp[s:e])
+                if len(st_clu) > 10 and (st_clu.max() - st_clu.min()) > 0:
+                    _, _, contam_all[idx] = check_CCG(st_clu, tbin=tbin)
+                if e - s > 1:
+                    isis = np.diff(np.sort(st_grp[s:e]))
+                    isi_viol_all[idx] = float((isis < isi_ref).sum()) / len(isis)
+        else:
+            # Build job list -- slice the per-cluster spike arrays here so
+            # _contam_isi_one (a module-level function) receives picklable
+            # plain numpy arrays rather than indices into shared locals.
+            import concurrent.futures as _cf
+            jobs = []
+            for idx, clu in enumerate(all_cluster_ids):
+                gi = uid_to_g.get(int(clu), -1)
+                if gi < 0:
+                    continue
+                s, e = int(ubounds_g[gi]), int(ubounds_g[gi + 1])
+                jobs.append((idx, st_sec_grp[s:e].copy(), st_grp[s:e].copy(), tbin, isi_ref))
+            n_workers_eff = min(n_workers, len(jobs)) if jobs else 1
+            print(f"  Computing ContamPct/ISI for {len(jobs)} clusters on {n_workers_eff} workers …")
+            with _cf.ProcessPoolExecutor(max_workers=n_workers_eff) as pool:
+                for idx_r, contam_r, isi_r in tqdm(
+                        pool.map(_contam_isi_one, jobs, chunksize=256),
+                        total=len(jobs), desc="ContamPct/ISI"):
+                    contam_all[idx_r]   = contam_r
+                    isi_viol_all[idx_r] = isi_r
         del grp_order, sc_grp, st_grp, uids_g, ucnts_g, ubounds_g, uid_to_g, st_sec_grp
 
         snr_df    = pd.DataFrame({"cluster_id": all_cluster_ids, "SNR": np.round(snr, 4)})
@@ -742,7 +846,7 @@ def compute_mean_waveforms(rec, spike_times, spike_clusters, sparsity_mask,
 
 
 def compute_similarity_matrix(mean_wf_slay, sparsity_mask, sparsity_uid_to_row,
-                               good_ids, mua_ids):
+                               good_ids, mua_ids, use_gpu=False):
     """Cosine similarity between good+mua unit mean waveforms, zeroed for
     pairs whose sparse channel neighborhoods don't overlap at all (different
     probe regions -> guaranteed non-matching). This keeps the matrix at
@@ -758,6 +862,14 @@ def compute_similarity_matrix(mean_wf_slay, sparsity_mask, sparsity_uid_to_row,
     covers every currently-good/mua cluster id before trusting it (a new
     merged cluster id won't be in an old cache — see main()'s
     cached_metrics_ok check).
+
+    use_gpu : bool
+        False (default): the (n_sim, n_sim) matmul runs on CPU via numpy.
+        True: try torch/cuBLAS on GPU instead (ported from
+        try_merge_selfdbuild_1.py — ~100x faster on an A100 at n_sim ~50k;
+        negligible at a few hundred units). Silently falls back to CPU numpy
+        if no CUDA device is available or torch isn't importable — same
+        output either way, just faster when it's worth it.
     """
     N_wf = mean_wf_slay.shape[0]
     sim_ids_arr = np.array(sorted(
@@ -778,7 +890,25 @@ def compute_similarity_matrix(mean_wf_slay, sparsity_mask, sparsity_uid_to_row,
             sp_rows[i] = sparsity_mask[sparsity_uid_to_row[uid]]
     prox_mask = (sp_rows @ sp_rows.T) > 0             # (n_sim, n_sim) bool
 
-    cosine_sim_good = w_all[sim_ids_arr] @ w_all[sim_ids_arr].T
+    w_sim = w_all[sim_ids_arr]   # (n_sim, flat_wf)
+    cosine_sim_good = None
+    if use_gpu:
+        try:
+            import torch
+            if torch.cuda.is_available():
+                print(f"  Using GPU for cosine sim ({n_sim}x{n_sim}) …")
+                torch.backends.cuda.matmul.allow_tf32 = False  # keep full float32 precision
+                w_gpu = torch.from_numpy(w_sim).cuda()
+                cosine_sim_good = (w_gpu @ w_gpu.T).cpu().numpy()
+                del w_gpu
+                torch.cuda.empty_cache()
+            else:
+                print("  use_gpu=True but no CUDA device available — using CPU numpy …")
+        except Exception as e:
+            print(f"  use_gpu=True but GPU path failed ({e}) — using CPU numpy …")
+    if cosine_sim_good is None:
+        cosine_sim_good = w_sim @ w_sim.T
+    del w_all, w_sim
     np.fill_diagonal(cosine_sim_good, 1.0)
     cosine_sim_good[~prox_mask] = 0.0
 
@@ -851,12 +981,43 @@ def write_phy_template_files(mean_wf_slay, cosine_sim_good, sim_ids_arr,
     print(f"  spike_templates : overwritten to match spike_clusters  (max={int(spike_clusters.max())})")
 
 
+def _pair_metrics_worker(args):
+    """XCorr significance + cosine-similarity metrics for a single unit
+    pair. Module-level (not a closure) so it's picklable for
+    ProcessPoolExecutor -- see compute_pair_metrics' n_workers path.
+    Ported from try_merge_selfdbuild_1.py.
+    """
+    c1, c2, st1, st2, wf1_flat, wf2_flat, n1, n2, sim_val, cp1, cp2, xp = args
+    import slay as _slay
+    slay_sim = float(np.dot(wf1_flat, wf2_flat) / (n1 * n2)) if (n1 > 0 and n2 > 0) else 0.0
+    xgram = _slay.x_correlogram(
+        st1, st2,
+        window_size=xp["window_size"],
+        bin_width=xp["xcorr_bin_width"],
+        overlap_tol=xp["overlap_tol"],
+    )
+    xcorr_sig = float(_slay.calc_xcorr_sig(
+        xgram,
+        xcorr_bin_width=xp["xcorr_bin_width"],
+        min_xcorr_rate=xp["min_xcorr_rate"],
+    ))
+    return {"Cluster 1": c1, "Cluster 2": c2,
+            "Similarity": sim_val, "Slay Similarity": slay_sim,
+            "XCorr": xcorr_sig, "ContamPct_1": cp1, "ContamPct_2": cp2}
+
+
 def compute_pair_metrics(mean_wf_slay, cosine_sim_good, sim_ids_arr, sim_id_to_pos,
                           sim_lookup, good_ids, spike_times, spike_clusters,
-                          contam_pct_df, params):
+                          contam_pct_df, params, n_workers=0):
     """XCorr significance + quality columns for every good x good pair above
     the weak similarity threshold. Returns metrics_df, sorted by Similarity
     descending, and also saved to OUT_DIR/metrics.tsv.
+
+    n_workers : int
+        0 (default) computes every pair serially, same as before. > 0
+        dispatches the per-pair loop to that many ProcessPoolExecutor
+        workers instead (ported from try_merge_selfdbuild_1.py) — same
+        values either way, just faster at large candidate-pair counts.
     """
     weak_thresh = params["weak_sim_thresh"]
     good_pos_in_sim = np.array([sim_id_to_pos[int(uid)] for uid in good_ids
@@ -875,38 +1036,64 @@ def compute_pair_metrics(mean_wf_slay, cosine_sim_good, sim_ids_arr, sim_id_to_p
         for uid in good_ids
     }
 
-    rows = []
-    for c1, c2 in tqdm(pairs, desc="Pair metrics"):
-        wf1 = mean_wf_slay[c1]    # (n_ch, wf_len)
-        wf2 = mean_wf_slay[c2]
+    if n_workers <= 0:
+        rows = []
+        for c1, c2 in tqdm(pairs, desc="Pair metrics"):
+            wf1 = mean_wf_slay[c1]    # (n_ch, wf_len)
+            wf2 = mean_wf_slay[c2]
 
-        v1 = wf1.flatten().astype(float)
-        v2 = wf2.flatten().astype(float)
-        n1 = np.linalg.norm(v1)
-        n2 = np.linalg.norm(v2)
-        slay_sim = float(np.dot(v1, v2) / (n1 * n2)) if (n1 > 0 and n2 > 0) else 0.0
+            v1 = wf1.flatten().astype(float)
+            v2 = wf2.flatten().astype(float)
+            n1 = np.linalg.norm(v1)
+            n2 = np.linalg.norm(v2)
+            slay_sim = float(np.dot(v1, v2) / (n1 * n2)) if (n1 > 0 and n2 > 0) else 0.0
 
-        xgram = slay.x_correlogram(
-            times_sec[c1], times_sec[c2],
-            window_size=params["window_size"],
-            bin_width=params["xcorr_bin_width"],
-            overlap_tol=params["overlap_tol"],
-        )
-        xcorr_sig = slay.calc_xcorr_sig(
-            xgram,
-            xcorr_bin_width=params["xcorr_bin_width"],
-            min_xcorr_rate=params["min_xcorr_rate"],
-        )
+            xgram = slay.x_correlogram(
+                times_sec[c1], times_sec[c2],
+                window_size=params["window_size"],
+                bin_width=params["xcorr_bin_width"],
+                overlap_tol=params["overlap_tol"],
+            )
+            xcorr_sig = slay.calc_xcorr_sig(
+                xgram,
+                xcorr_bin_width=params["xcorr_bin_width"],
+                min_xcorr_rate=params["min_xcorr_rate"],
+            )
 
-        rows.append({
-            "Cluster 1":       c1,
-            "Cluster 2":       c2,
-            "Similarity":      sim_lookup(c1, c2),  # good x good sub-matrix, via id->pos map
-            "Slay Similarity": slay_sim,
-            "XCorr":           float(xcorr_sig),
-            "ContamPct_1":     float(contam_pct_df.loc[c1, "ContamPct"]) if c1 in contam_pct_df.index else np.nan,
-            "ContamPct_2":     float(contam_pct_df.loc[c2, "ContamPct"]) if c2 in contam_pct_df.index else np.nan,
-        })
+            rows.append({
+                "Cluster 1":       c1,
+                "Cluster 2":       c2,
+                "Similarity":      sim_lookup(c1, c2),  # good x good sub-matrix, via id->pos map
+                "Slay Similarity": slay_sim,
+                "XCorr":           float(xcorr_sig),
+                "ContamPct_1":     float(contam_pct_df.loc[c1, "ContamPct"]) if c1 in contam_pct_df.index else np.nan,
+                "ContamPct_2":     float(contam_pct_df.loc[c2, "ContamPct"]) if c2 in contam_pct_df.index else np.nan,
+            })
+    else:
+        import concurrent.futures as _cf
+        pair_uids = np.unique(np.array(pairs).ravel()) if pairs else np.array([], dtype=int)
+        wf_flat  = {int(uid): mean_wf_slay[uid].flatten().astype(float) for uid in pair_uids}
+        wf_norms = {uid: float(np.linalg.norm(v)) for uid, v in wf_flat.items()}
+
+        jobs = []
+        for c1, c2 in pairs:
+            jobs.append((
+                c1, c2, times_sec[c1], times_sec[c2],
+                wf_flat[c1], wf_flat[c2], wf_norms[c1], wf_norms[c2],
+                sim_lookup(c1, c2),
+                float(contam_pct_df.loc[c1, "ContamPct"]) if c1 in contam_pct_df.index else np.nan,
+                float(contam_pct_df.loc[c2, "ContamPct"]) if c2 in contam_pct_df.index else np.nan,
+                params,
+            ))
+        del wf_flat, wf_norms
+
+        n_workers_eff = min(n_workers, len(jobs)) if jobs else 1
+        print(f"  Computing pair XCorr metrics for {len(jobs)} pairs on {n_workers_eff} workers …")
+        rows = []
+        with _cf.ProcessPoolExecutor(max_workers=n_workers_eff) as pool:
+            for row in tqdm(pool.map(_pair_metrics_worker, jobs, chunksize=64),
+                            total=len(jobs), desc="Pair metrics"):
+                rows.append(row)
 
     metrics_df   = pd.DataFrame(rows).sort_values("Similarity", ascending=False).reset_index(drop=True)
     metrics_path = OUT_DIR / "metrics.tsv"
@@ -1517,6 +1704,315 @@ def plot_merges(new2old, old2new, metrics_df, spike_times, spike_clusters,
 
 
 # %% [markdown]
+# #### Stage 5b (optional): plot_all_clusters — per-cluster QC gallery
+#
+# Ported from try_merge_selfdbuild.py's RUN_PLOT_ALL_PLOTS stage. Distinct
+# from plot_merges above: plot_merges only renders figures for pairs
+# find_merges already flagged as candidates; this renders one waveform+ACG+
+# similar-clusters figure for EVERY cluster, for manually browsing/QC-ing
+# the whole sort rather than just its proposed merges.
+
+# %%
+def _render_cluster_plot_worker(job):
+    """Render and save one cluster QC figure in a subprocess. Module-level
+    (not a closure) so it's picklable for ProcessPoolExecutor.
+
+    All data (waveforms, mean waveform, ACG, metadata) is pre-computed in
+    the main process and passed via *job* dict so the worker needs no
+    globals and no access to the recording object.
+
+    job keys
+    --------
+    out_path        : str -- destination .png path
+    cid             : int
+    n_sp            : int
+    snr_b           : float
+    contam_b        : float
+    label_b         : str
+    wfs_disp        : (n_sp, wf_len, n_disp) float32 -- individual traces
+    mwf_disp        : (n_disp, wf_len) float32 or None -- mean waveform
+    disp_ch_labels  : list[int] -- channel indices (for y-axis labels only)
+    ymin, ymax      : float
+    acg             : 1-D float array
+    sim_partners    : list[(cid, sim)] sorted by descending sim
+    pre, post       : int
+    sim_thresh      : float
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.gridspec import GridSpec, GridSpecFromSubplotSpec
+    import numpy as np
+    import math
+
+    out_path       = job["out_path"]
+    cid            = job["cid"]
+    n_sp           = job["n_sp"]
+    snr_b          = job["snr_b"]
+    contam_b       = job["contam_b"]
+    label_b        = job["label_b"]
+    wfs_disp       = job["wfs_disp"]       # (n_sp, wf_len, n_disp)
+    mwf_disp       = job["mwf_disp"]       # (n_disp, wf_len) or None
+    disp_ch_labels = job["disp_ch_labels"]  # list of int, for axis labels
+    ymin           = job["ymin"]
+    ymax           = job["ymax"]
+    acg            = job["acg"]
+    sim_partners   = job["sim_partners"]
+    pre            = job["pre"]
+    post           = job["post"]
+    sim_thresh     = job["sim_thresh"]
+
+    n_disp   = len(disp_ch_labels)
+    n_cols_b = 4
+    n_rows_b = math.ceil(n_disp / n_cols_b) if n_disp > 0 else 1
+    color_cp = (0.35, 0.60, 0.99)
+    xs       = np.arange(pre + post)
+
+    fig = plt.figure(figsize=(20, max(n_rows_b * 1.5, 5.0)), constrained_layout=False)
+    fig.patch.set_facecolor('#e0e0e0')
+    gs = GridSpec(1, 3, figure=fig, width_ratios=[3, 1.3, 1.3],
+                  wspace=0.3, left=0.05, right=0.97, top=0.85, bottom=0.07)
+
+    # ── Waveform grid ────────────────────────────────────────────────────
+    gs_wf = GridSpecFromSubplotSpec(n_rows_b, n_cols_b, subplot_spec=gs[0],
+                                    wspace=0.06, hspace=0.06)
+    for ci, ch_label in enumerate(disp_ch_labels):
+        ax_w = fig.add_subplot(gs_wf[ci // n_cols_b, ci % n_cols_b])
+        ax_w.set_facecolor("black")
+        ax_w.set_ylim(ymin, ymax)
+        ax_w.set_xticks([]); ax_w.set_yticks([])
+        ax_w.spines["top"].set_visible(False)
+        ax_w.spines["right"].set_visible(False)
+        ax_w.set_ylabel(str(ch_label), size=6, color="white", labelpad=1)
+        if len(wfs_disp) > 0 and ci < wfs_disp.shape[2]:
+            for j in range(len(wfs_disp)):
+                ax_w.plot(xs, wfs_disp[j, :, ci], color=color_cp,
+                          linewidth=0.2, alpha=0.3)
+        if mwf_disp is not None and ci < len(mwf_disp):
+            ax_w.plot(xs, mwf_disp[ci], color='white', linewidth=1.3, alpha=0.95)
+    for ci in range(n_disp, n_rows_b * n_cols_b):
+        fig.add_subplot(gs_wf[ci // n_cols_b, ci % n_cols_b]).set_visible(False)
+
+    # ── Auto-correlogram ─────────────────────────────────────────────────
+    ax_acg = fig.add_subplot(gs[1])
+    ax_acg.set_facecolor("black")
+    ax_acg.bar(range(len(acg)), acg, width=1, color=color_cp)
+    ax_acg.spines["top"].set_visible(False)
+    ax_acg.spines["right"].set_visible(False)
+    ax_acg.set_title("Auto-correlogram", color="black", size="small")
+    ax_acg.tick_params(axis='x', which='both', bottom=False, labelbottom=False)
+    ax_acg.set_yticks([0, max(int(acg.max()), 1)])
+
+    # ── Info text panel ──────────────────────────────────────────────────
+    ax_txt = fig.add_subplot(gs[2])
+    ax_txt.set_axis_off()
+    sim_lines = [f"  {pid}: {psim:.3f}" for pid, psim in sim_partners[:15]]
+    if len(sim_partners) > 15:
+        sim_lines.append(f"  … ({len(sim_partners) - 15} more)")
+    info_text = (
+        f"cluster_id : {cid}\n"
+        f"n_spikes   : {n_sp}\n"
+        f"SNR        : {snr_b:.2f}\n"
+        f"ContamPct  : {contam_b:.3f}\n"
+        f"label      : {label_b}\n\n"
+        f"Similar (>{sim_thresh}):\n"
+        + ("\n".join(sim_lines) if sim_lines else "  (none)")
+    )
+    ax_txt.text(0.05, 0.95, info_text, transform=ax_txt.transAxes,
+                fontsize=7, family="monospace", verticalalignment="top",
+                bbox=dict(facecolor="white", alpha=0.85, edgecolor="gray",
+                          boxstyle="round,pad=0.4"))
+
+    fig.suptitle(
+        f"Cluster {cid}  |  n={n_sp}  SNR={snr_b:.2f}  "
+        f"Contam={contam_b:.3f}  [{label_b.upper()}]",
+        fontsize=9, family="monospace",
+    )
+    fig.savefig(str(out_path), dpi=120, bbox_inches="tight")
+    plt.close(fig)
+    return str(out_path)
+
+
+def plot_all_clusters(all_cluster_ids, spike_times, spike_clusters, sparsity_mask,
+                       sparsity_uid_to_row, mean_wf_slay, snr, contam_all, labels,
+                       n_spikes_arr, rec, params, cluster_plots_dir,
+                       min_spikes=2, sim_thresh=0.9, mean_only=True,
+                       batch_size=5000, n_workers=0):
+    """Render a waveform+ACG+similar-clusters QC figure for EVERY cluster.
+
+    mean_only=True (default): all data already in RAM (mean waveforms, ACG
+      computed from spike_times, similarity from similar_templates.npy) --
+      zero recording I/O, fast even at tens of thousands of clusters.
+    mean_only=False: also plots individual spike traces, which requires
+      scanning the recording in batches (much slower on a large recording).
+    """
+    from concurrent.futures import ProcessPoolExecutor
+    import gc as _gc
+
+    cluster_plots_dir = Path(cluster_plots_dir)
+    cluster_plots_dir.mkdir(exist_ok=True, parents=True)
+
+    pre, post   = params["pre_samples"], params["post_samples"]
+    max_sp_plot = params["max_spikes_for_plot"]
+    fs          = params["sample_rate"]
+    n_ch        = rec.get_num_channels()
+    rng         = np.random.default_rng(42)
+
+    # ── Similarity lookup: use the full (n_templates, n_templates) matrix
+    # written for phy compatibility (similar_templates.npy) -- same values
+    # as the compact good+mua similarity_index.npy, just scattered to raw
+    # cluster-id positions, so it can be indexed directly by cid. ──────────
+    sim_path = PHY_DIR / "similar_templates.npy"
+    if sim_path.exists():
+        sim_matrix = np.load(sim_path)
+        print(f"Loaded sim_matrix from {sim_path}  shape={sim_matrix.shape}")
+    else:
+        sim_matrix = None
+        print("Warning: similar_templates.npy not found -- similar-cluster "
+              "annotations will be omitted. Run build_metrics first.")
+
+    ch_mask = {
+        int(uid): np.where(sparsity_mask[sparsity_uid_to_row[int(uid)]])[0]
+        for uid in np.unique(spike_clusters)
+        if int(uid) in sparsity_uid_to_row
+    }
+    cid_to_idx = {int(cid): i for i, cid in enumerate(all_cluster_ids)}
+
+    print("Building similar-cluster lookup …")
+    sim_partners = {}
+    if sim_matrix is not None:
+        valid_arr = np.array(
+            [int(c) for c in all_cluster_ids if int(c) < sim_matrix.shape[0]], dtype=np.int64)
+        for cid_int in tqdm([int(c) for c in all_cluster_ids], desc="Sim lookup", leave=False):
+            if cid_int >= sim_matrix.shape[0]:
+                sim_partners[cid_int] = []
+                continue
+            sims  = sim_matrix[cid_int][valid_arr]
+            mask  = (sims > sim_thresh) & (valid_arr != cid_int)
+            pidx  = np.where(mask)[0]
+            if len(pidx) == 0:
+                sim_partners[cid_int] = []
+            else:
+                order = pidx[np.argsort(-sims[pidx])]
+                sim_partners[cid_int] = [(int(valid_arr[k]), float(sims[k])) for k in order]
+    else:
+        for cid in all_cluster_ids:
+            sim_partners[int(cid)] = []
+
+    cids_to_plot = [
+        int(cid) for i, cid in enumerate(all_cluster_ids)
+        if n_spikes_arr[i] >= min_spikes
+    ]
+    print(f"Clusters to plot: {len(cids_to_plot)} / {len(all_cluster_ids)}  (min_spikes >= {min_spikes})")
+
+    workers = n_workers if n_workers > 0 else None
+
+    def build_job(cid, wfs_disp=None):
+        idx      = cid_to_idx[cid]
+        n_sp     = int(n_spikes_arr[idx])
+        contam_v = float(contam_all[idx])
+        label_v  = str(labels[idx])
+        snr_v    = float(snr[idx])
+        active_ch = ch_mask.get(cid, np.arange(n_ch))
+        n_disp    = min(32, len(active_ch))
+        disp_ch   = active_ch[:n_disp]
+
+        mwf_disp = None
+        if mean_wf_slay is not None and cid < mean_wf_slay.shape[0] and len(disp_ch) > 0:
+            mwf_disp = mean_wf_slay[cid][disp_ch].copy()
+
+        if wfs_disp is None:
+            wfs_disp_out = np.empty((0, pre + post, 0), dtype=np.float32)
+        else:
+            wfs_disp_out = (wfs_disp[:, :, :n_disp].copy()
+                            if len(wfs_disp) > 0
+                            else np.empty((0, pre + post, 0), dtype=np.float32))
+
+        if mwf_disp is not None and len(mwf_disp) > 0:
+            ptp_per_ch = np.ptp(mwf_disp, axis=1)
+            sp_pk = mwf_disp[int(np.argmax(ptp_per_ch))]
+        elif len(wfs_disp_out) > 0 and wfs_disp_out.shape[2] > 0:
+            sp_pk = np.mean(wfs_disp_out[:, :, 0], axis=0)
+        else:
+            sp_pk = np.zeros(pre + post)
+        ptp  = max(float(np.ptp(sp_pk)), 1e-6)
+        ymin = float(sp_pk.min()) - 0.15 * ptp
+        ymax = float(sp_pk.max()) + 0.15 * ptp
+
+        all_st_sec = spike_times[spike_clusters == cid].astype(np.float64) / fs
+        acg = np.zeros(1)
+        if len(all_st_sec) > 1:
+            try:
+                acg = _auto_correlogram(
+                    all_st_sec, params["window_size"],
+                    params["ref_pen_bin_width"] / 1000.0, params["overlap_tol"])
+            except Exception:
+                pass
+
+        return {
+            "out_path":       str(cluster_plots_dir / f"cluster_{cid:06d}.png"),
+            "cid":            cid,
+            "n_sp":           n_sp,
+            "snr_b":          snr_v,
+            "contam_b":       contam_v,
+            "label_b":        label_v,
+            "wfs_disp":       wfs_disp_out,
+            "mwf_disp":       mwf_disp,
+            "disp_ch_labels": disp_ch.tolist(),
+            "ymin":           ymin,
+            "ymax":           ymax,
+            "acg":            acg,
+            "sim_partners":   sim_partners.get(cid, []),
+            "pre":            pre,
+            "post":           post,
+            "sim_thresh":     sim_thresh,
+        }
+
+    if mean_only:
+        print("mean_only=True: skipping recording I/O …")
+        todo = [cid for cid in cids_to_plot
+                if not (cluster_plots_dir / f"cluster_{cid:06d}.png").exists()]
+        print(f"  Building {len(todo)} job dicts (ACG + mean waveforms) …")
+        jobs = [build_job(cid) for cid in tqdm(todo, desc="Build jobs", leave=False)]
+        print(f"  Submitting {len(jobs)} render jobs to workers …")
+        with ProcessPoolExecutor(max_workers=workers) as executor:
+            futs = [executor.submit(_render_cluster_plot_worker, j) for j in jobs]
+            for f in tqdm(futs, desc="Rendering"):
+                f.result()
+    else:
+        print("mean_only=False: extracting waveforms from recording …")
+        n_batches = math.ceil(len(cids_to_plot) / batch_size)
+        with ProcessPoolExecutor(max_workers=workers) as executor:
+            for b in tqdm(range(n_batches), desc="Plotting clusters (batches)"):
+                batch_cids = cids_to_plot[b * batch_size:(b + 1) * batch_size]
+                batch_cids = [cid for cid in batch_cids
+                             if not (cluster_plots_dir / f"cluster_{cid:06d}.png").exists()]
+                if not batch_cids:
+                    continue
+                st_batch = {}
+                for uid in batch_cids:
+                    st = spike_times[spike_clusters == uid]
+                    if max_sp_plot > 0 and len(st) > max_sp_plot:
+                        st = rng.choice(st, max_sp_plot, replace=False)
+                    st_batch[uid] = np.sort(st)
+
+                wfs_batch = _extract_waveforms_batched(
+                    rec, st_batch, pre, post, channel_mask=ch_mask, return_mean_only=False)
+
+                batch_futs = []
+                for cid in batch_cids:
+                    wfs_u = wfs_batch.get(cid, np.empty((0, pre + post, 1), dtype=np.float32))
+                    batch_futs.append(executor.submit(_render_cluster_plot_worker, build_job(cid, wfs_disp=wfs_u)))
+
+                del wfs_batch
+                _gc.collect()
+                for f in batch_futs:
+                    f.result()
+
+    print(f"\nAll-cluster plots saved to {cluster_plots_dir}/")
+
+
+# %% [markdown]
 # #### Stage 6: accept_merges — apply accepted merges to spike arrays (DESTRUCTIVE)
 
 # %%
@@ -1862,6 +2358,7 @@ def run_analyzer_label_metrics(rec, spike_times, spike_clusters, all_cluster_ids
         seed=0,
         contam_tbin_ms=SELF_BUILD_PARAMS["contam_tbin_ms"],
         isi_ref_ms=SELF_BUILD_PARAMS["isi_ref_ms"],
+        n_workers=N_LABEL_WORKERS,
     )
 
     contam_pct_df = pd.read_csv(PHY_DIR / "cluster_ContamPct.tsv", sep="\t").set_index("cluster_id")
@@ -1894,11 +2391,13 @@ def run_analyzer_label_metrics(rec, spike_times, spike_clusters, all_cluster_ids
             rec, spike_times, spike_clusters, sparsity_mask, sparsity_uid_to_row,
             SELF_BUILD_PARAMS)
         cosine_sim_good, sim_ids_arr = compute_similarity_matrix(
-            mean_wf_slay, sparsity_mask, sparsity_uid_to_row, good_ids, mua_ids)
+            mean_wf_slay, sparsity_mask, sparsity_uid_to_row, good_ids, mua_ids,
+            use_gpu=USE_GPU_SIMILARITY)
         sim_lookup, sim_id_to_pos = make_sim_lookup(cosine_sim_good, sim_ids_arr)
         metrics_df = compute_pair_metrics(
             mean_wf_slay, cosine_sim_good, sim_ids_arr, sim_id_to_pos, sim_lookup,
-            good_ids, spike_times, spike_clusters, contam_pct_df, SELF_BUILD_PARAMS)
+            good_ids, spike_times, spike_clusters, contam_pct_df, SELF_BUILD_PARAMS,
+            n_workers=N_METRICS_WORKERS)
 
     sim_lookup, sim_id_to_pos = make_sim_lookup(cosine_sim_good, sim_ids_arr)
 
@@ -1911,7 +2410,8 @@ def run_analyzer_label_metrics(rec, spike_times, spike_clusters, all_cluster_ids
 
     return {
         "analyzer": analyzer, "sparsity_mask": sparsity_mask, "sparsity_uid_to_row": sparsity_uid_to_row,
-        "snr": snr, "contam_all": contam_all, "contam_pct_df": contam_pct_df,
+        "snr": snr, "contam_all": contam_all, "isi_viol_all": isi_viol_all,
+        "labels": labels, "n_spikes_arr": n_spikes_arr, "contam_pct_df": contam_pct_df,
         "good_ids": good_ids, "mua_ids": mua_ids,
         "mean_wf_slay": mean_wf_slay, "cosine_sim_good": cosine_sim_good, "sim_ids_arr": sim_ids_arr,
         "sim_lookup": sim_lookup, "sim_id_to_pos": sim_id_to_pos, "metrics_df": metrics_df,
@@ -1986,6 +2486,18 @@ def main():
             new2old, old2new, ctx["metrics_df"], spike_times, spike_clusters,
             ctx["mean_wf_slay"], noise_levels, ch_mask_by_uid,
             rec, SELF_BUILD_PARAMS)
+
+    # ── Stage 5b (optional): plot_all_clusters — per-cluster QC gallery ────
+    if not RUN_PLOT_ALL_CLUSTERS:
+        print("RUN_PLOT_ALL_CLUSTERS=False — skipping.")
+    else:
+        plot_all_clusters(
+            all_cluster_ids, spike_times, spike_clusters, ctx["sparsity_mask"], ctx["sparsity_uid_to_row"],
+            ctx["mean_wf_slay"], ctx["snr"], ctx["contam_all"], ctx["labels"], ctx["n_spikes_arr"],
+            rec, SELF_BUILD_PARAMS, CLUSTER_PLOTS_DIR,
+            min_spikes=CLUSTER_PLOTS_MIN_SPIKES, sim_thresh=CLUSTER_PLOTS_SIM_THRESH,
+            mean_only=CLUSTER_PLOTS_MEAN_ONLY, batch_size=CLUSTER_PLOTS_BATCH_SIZE,
+            n_workers=N_PLOT_WORKERS)
 
     # ── Stage 6: accept_merges ──────────────────────────────────────────────
     with open(OUT_DIR / "new2old.json") as f:

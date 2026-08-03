@@ -2,9 +2,9 @@
 # Initial working directory:
 #SBATCH -D ./
 # Output directory:
-#SBATCH -o ./slurm/%j/logs/training.log
+#SBATCH -o ./slurm/%j/logs/tomato.log
 # Error directory:
-#SBATCH -e ./slurm/%j/logs/training.log
+#SBATCH -e ./slurm/%j/logs/tomato.log
 # Job Name:
 #SBATCH -J tomato
 #
@@ -22,7 +22,7 @@
 #SBATCH --mail-user=gong.tingchen@gmail.com
 #SBATCH --mail-type=BEGIN,END,FAIL
 
-#SBATCH --time=23:00:00
+#SBATCH --time=2:20:00
 
 # Load modules in the correct order for PyTorch distributed training
 # module purge
@@ -40,4 +40,12 @@ PYTHON=${PYTHON_PATH:-$(which python)}
 # Set your sample range here, or override via sbatch --export:
 #   sbatch --export=ALL,SAMPLE_START=0,SAMPLE_END=520000000 run_try_tomato.sh
 
-$PYTHON /u/gongt/scripts/try_tomato.py --sample_start 540000000
+DATA_PATH="/nexus/posix0/MBR-neuralsystems/ephys/GLC7189/GLC7189_c_g0/preprocessed"
+FOLDER_NAME="thresholding_peaks_3.5"
+MOTION_PATH="${DATA_PATH}/${FOLDER_NAME}/motion_estimates/motion_dredge"
+LOCALIZED_PEAKS_PATH="${DATA_PATH}/${FOLDER_NAME}/localized_peaks_mt_raw.npy"
+
+$PYTHON /u/gongt/scripts/tomato/try_tomato.py \
+    --data_path "$DATA_PATH" \
+    --motion_path "$MOTION_PATH" \
+    --localized_peaks_path "$LOCALIZED_PEAKS_PATH"

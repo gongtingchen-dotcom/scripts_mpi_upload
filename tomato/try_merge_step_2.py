@@ -1,10 +1,16 @@
 """
 try_merge_step_2.py — greedy core-cluster merge search.
 
-Run this AFTER try_merge_selfdbuild_cleaned.py has completed at least its
-build_metrics stage for this dataset (needs, in PHY_DIR: spike_times.npy,
-spike_clusters.npy, cluster_group.tsv, cluster_ContamPct.tsv, and
-mean_waveforms.npy). Same environment requirement as step 1 (the `slay`
+Runs independently against ANY phy-openable output directory — set PHY_DIR /
+RECORDING_PATH / PEAKS_FILE / ANALYZER_DIR below to point at whatever run you
+want (not necessarily one produced by try_merge_selfdbuild_cleaned.py in this
+same checkout / with its currently-hardcoded PATHS). The only real
+requirement is that PHY_DIR already contains a valid phy export (needs, at
+minimum: spike_times.npy, spike_clusters.npy, cluster_group.tsv,
+cluster_ContamPct.tsv, cluster_snr.tsv, and mean_waveforms.npy — i.e. at
+least try_merge_selfdbuild_cleaned.py's build_analyzer/label_clusters/
+build_metrics stages have been run for this PHY_DIR at some point, by this
+checkout or another). Same environment requirement as step 1 (the `slay`
 micromamba env).
 
 Reuses step 1's shared building blocks directly (imported as `s1`) instead
@@ -12,7 +18,12 @@ of re-deriving them, so "what counts as a good unit" and the QC plots stay
 identical between the two scripts: s1._predict_merge_label /
 s1._compute_unit_metrics / s1._assign_label for the merge-quality gate,
 s1.plot_merges for the waveform/correlogram/merged-cluster figures, and
-s1.accept_merges for applying accepted groups.
+s1.accept_merges for applying accepted groups. Threshold PARAMETERS
+(SELF_BUILD_PARAMS: snr_good_min, max_contam_pct, etc.) are deliberately
+inherited from s1 wholesale, unmodified — see STEP2_PARAMS below. PATHS are
+NOT inherited — s1's own PHY_DIR/RECORDING_PATH/etc. globals are overridden
+immediately after import (see "Paths" section) so every s1.* helper called
+below operates on THIS script's directories, whatever they're set to.
 
 WHY THIS EXISTS
 ---------------
@@ -94,12 +105,74 @@ ask" spirit as step 1):
 
 # %%
 import json
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 from tqdm.auto import tqdm
 
+import spikeinterface.full as si
+
 import try_merge_selfdbuild_cleaned as s1
+
+# %% [markdown]
+# #### Paths — edit these before running (independent of try_merge_selfdbuild_cleaned.py's
+# own hardcoded PATHS section — set these to whatever phy output you want to
+# work on, whether or not it came from this checkout of step 1)
+
+# %%
+PHY_DIR        = r"E:\GLC7189_c_g0\tomato_sorting_selfbuild_stricter_run4\export_to_phy"
+RECORDING_PATH = r"E:\GLC7189_c_g0\preprocessed"
+# Peaks file from thresholding — used to derive peak channel per unit if the
+# analyzer needs (re)building. Set to None to fall back to estimate_sparsity.
+PEAKS_FILE     = r"E:\GLC7189_c_g0\preprocessed\thresholding_peaks/peaks_combined2.npy"
+# Sparse analyzer for THIS PHY_DIR. Defaults to whatever step 1 would have
+# built alongside it (PHY_DIR/_sparse_analyzer5); override if step 1 used a
+# different suffix, or if this PHY_DIR wasn't built by step 1 at all.
+ANALYZER_DIR   = None
+
+# Run tag step 1 used when it last computed mean_waveforms.npy/metrics.tsv
+# for THIS PHY_DIR (i.e. its OUT_DIR = PHY_DIR/STEP1_RUN_TAG) — used only so
+# the post-accept refresh below can find and reuse that cache instead of
+# recomputing it. Getting this wrong isn't destructive: a miss just means a
+# cache-less (slower) recompute, since mean_waveforms.npy/similarity_index.npy
+# also always live directly under PHY_DIR as a fallback.
+STEP1_RUN_TAG  = "run4"
+
+# Sparse analyzer settings — only used if ANALYZER_DIR needs (re)building.
+TARGET_N_CHANNELS    = 32
+SAMPLES_BEFORE       = 30
+SAMPLES_AFTER        = 35
+MAX_SPIKES_PER_UNIT  = 1000
+
+PHY_DIR        = Path(PHY_DIR).resolve()
+RECORDING_PATH = Path(RECORDING_PATH).resolve()
+PEAKS_FILE     = Path(PEAKS_FILE) if PEAKS_FILE else None
+ANALYZER_DIR   = Path(ANALYZER_DIR).resolve() if ANALYZER_DIR else (PHY_DIR / "_sparse_analyzer5")
+
+# Point step 1's module-level globals at THIS script's own paths/settings, so
+# every s1.* helper called below (run_analyzer_label_metrics, accept_merges,
+# sync_metrics_tsvs_to_current_clusters, clear_stale_phy_cache, ...) operates
+# on PHY_DIR/RECORDING_PATH/etc. above -- not whatever happens to be
+# hardcoded at the top of try_merge_selfdbuild_cleaned.py right now. This
+# works because those functions read PHY_DIR etc. as module globals at call
+# time, not as parameters -- confirmed by inspection, not every s1.* function
+# takes an explicit path argument. Threshold PARAMETERS (SELF_BUILD_PARAMS)
+# are deliberately NOT touched here -- see STEP2_PARAMS below.
+s1.PHY_DIR             = PHY_DIR
+s1.RECORDING_PATH      = RECORDING_PATH
+s1.PEAKS_FILE          = PEAKS_FILE
+s1.ANALYZER_DIR        = ANALYZER_DIR
+s1.OUT_DIR             = PHY_DIR / STEP1_RUN_TAG
+s1.RUN_TAG             = STEP1_RUN_TAG
+s1.TARGET_N_CHANNELS   = TARGET_N_CHANNELS
+s1.SAMPLES_BEFORE      = SAMPLES_BEFORE
+s1.SAMPLES_AFTER       = SAMPLES_AFTER
+s1.MAX_SPIKES_PER_UNIT = MAX_SPIKES_PER_UNIT
+
+print(f"PHY_DIR        : {PHY_DIR}")
+print(f"RECORDING_PATH : {RECORDING_PATH}")
+print(f"ANALYZER_DIR   : {ANALYZER_DIR}")
 
 # %% [markdown]
 # #### Run flags
@@ -124,6 +197,13 @@ RUN_ACCEPT_MERGES    = True   # apply accepted merges to spike arrays (DESTRUCTI
 # xcorr_gate_min are also inherited but unused by the merge-finding gate --
 # see the XCorr note in the module docstring; window_size/ref_pen_bin_width/
 # overlap_tol are still used by s1.plot_merges' correlogram figures.)
+#
+# NOTE: this inherits THRESHOLD VALUES only (a plain dict copy, taken before
+# any path override above) -- not paths. SELF_BUILD_PARAMS also happens to
+# carry "KS_folder"/"results_folder" entries baked in from s1's own hardcoded
+# PATHS at s1's import time; harmless here since accept_merges() always
+# overwrites both from its own out_dir/results_folder arguments (or from the
+# now-patched s1.PHY_DIR/s1.RUN_TAG) before use, never from this dict.
 
 # %%
 STEP2_PARAMS = dict(s1.SELF_BUILD_PARAMS)
@@ -133,13 +213,12 @@ STEP2_PARAMS.update({
                                  # step 1's "max_dist": a channel-index difference, not microns)
 })
 
-STEP2_RUN_TAG      = s1.RUN_TAG + "_step2"
-STEP2_OUT_DIR      = s1.PHY_DIR / STEP2_RUN_TAG
+STEP2_RUN_TAG      = STEP1_RUN_TAG + "_step2"
+STEP2_OUT_DIR      = PHY_DIR / STEP2_RUN_TAG
 STEP2_PLOTS_DIR    = STEP2_OUT_DIR / "merges"
 STEP2_REJECTED_DIR = STEP2_PLOTS_DIR / "rejected"
 
-print(f"PHY_DIR (from step 1) : {s1.PHY_DIR}")
-print(f"STEP2_OUT_DIR          : {STEP2_OUT_DIR}")
+print(f"STEP2_OUT_DIR  : {STEP2_OUT_DIR}")
 
 
 # %% [markdown]
