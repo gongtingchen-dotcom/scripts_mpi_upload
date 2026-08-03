@@ -1,11 +1,30 @@
 #!/usr/bin/env python3
 
+import sys
+
+# In this environment, torch's optimizer construction (torch.optim.Adam.__init__,
+# used by skorch/FNN) lazily imports torch._dynamo on its first call, which in
+# turn imports triton purely to check availability (torch/utils/_triton.py's
+# has_triton_package()) -- and triton's native extension segfaults/hangs on
+# load here (torch==2.12.1+cu130 / triton==3.7.1 on this machine's GPU driver),
+# regardless of whether training ever touches the GPU or calls torch.compile.
+# Blocking the import (rather than uninstalling triton, which would touch the
+# shared conda env) makes it fail as a clean, caught ImportError instead.
+sys.modules.setdefault("triton", None)
+
+# stdout is piped through `tee` (see run_theo_decode_cv.sh), not a tty, so
+# CPython fully block-buffers it by default -- prints can sit invisible in
+# the buffer for a long time instead of reaching the log file as they
+# happen. Line-buffer explicitly so per-fold progress below (and everything
+# else) shows up in the log in real time, not just at process exit.
+sys.stdout.reconfigure(line_buffering=True)
+
 import argparse
 import datetime
 import json
 import platform
 import subprocess
-import sys
+import time
 import pickle
 from pathlib import Path
 
@@ -28,35 +47,12 @@ from sklearn.svm import SVR
 from Neural_Decoding.nonlinear import WienerCascade
 from Neural_Decoding.preprocessing_funcs import LagMat, bin_spikes
 
-DEFAULT_RIDGE_ALPHAS = np.logspace(-2, 7, 37)
-# Widened from logspace(-2, 4, 25): every fold/output in the previous run
-# selected alpha=1e4, the top of that grid -- RidgeCV's internal CV wanted
-# more shrinkage than the grid allowed, so the reported "best" alpha (and the
-# resulting train R2) was an artifact of hitting the ceiling, not a genuine
-# optimum. Extending the ceiling to 1e7 (same ~4 points/decade density) lets
-# it settle wherever it actually wants to.
+DEFAULT_RIDGE_ALPHAS = np.logspace(-2, 4, 25)
 
-WC_DEGREE = 2
-# WienerCascade fits an unregularized LinearRegression, then a degree-N
-# polyfit of y on that linear prediction (see Neural_Decoding/nonlinear.py --
-# not editable here). With ~2.5k collinear MUA/lag features, the OLS stage
-# overfits and can emit held-out predictions well outside its training
-# range; a degree-3 polyfit amplifies any such excursion cubically (observed:
-# fold/output R2 as low as -490). Dropping to degree=2 still allows a
-# nonlinear correction but grows quadratically instead of cubically outside
-# the fitted range, bounding how catastrophic an out-of-range excursion can
-# get. The real fix is feeding it less collinear input (see channel-dropping
-# in main()); this is the one knob on WC itself we can turn without touching
-# the Neural_Decoding_sklearn package.
+WC_DEGREE = 3
 
-SVR_C = 1.0
+SVR_C = 3.0
 SVR_MAX_ITER = 50000
-# Previous C=3.0/max_iter=2000 combination hit ConvergenceWarning
-# ("Solver terminated early") on every single fold/output -- it was neither
-# converged nor validated, so its R2 wasn't a fair read on this model either.
-# C lowered to sklearn's default (more regularization, less prone to
-# overfitting the ~2.5k-dim feature space) and max_iter raised enough to
-# actually reach convergence.
 
 
 def _package_version(module_name):
@@ -217,14 +213,6 @@ def bin_output_safe(outputs, output_times, dt, t_start, t_end):
 # depth and the peak's time, then snapped to whichever channel is now
 # physically nearest. That snapped channel becomes the peak's corrected
 # channel_index for MUA binning.
-#
-# The depth fed into the correction is the peak's own continuous LOCALIZED
-# depth (from --localized-peaks-path, e.g. localized_peaks_mt_raw.npy), not
-# the discrete depth of its home channel -- the localization is a much finer
-# estimate of where the spike actually originated than "which channel
-# detected it first". The x position is deliberately kept at the home
-# channel's x (localized x is noisy across shanks/columns) so the snap step
-# only has to resolve depth, not shank.
 
 def get_corrected_positions(peak_times_sec, positions, motion_obj):
     """positions: (n_peaks, 2) [x, y] home-channel location of each peak.
@@ -252,45 +240,6 @@ def snap_to_nearest_channel(positions, channel_positions, chunk_size=10000):
         dist2 = np.sum(diff * diff, axis=2)
         snapped_ch_idx[start:stop] = np.argmin(dist2, axis=1)
     return snapped_ch_idx
-
-
-# --- Channel grouping (spatial "smoothing") ----------------------------------
-# This pipeline (Neural_Decoding_sklearn) was built around ~10-20 sorted
-# single units. Here it's fed 355 raw per-channel MUA counts instead, which
-# is a different regime: adjacent channels are only ~20um apart, well within
-# a single neuron's spike waveform footprint, so neighboring channels are
-# highly spatially correlated rather than independent "units" -- they mostly
-# rediscover the same nearby population at different amplitudes. That both
-# (a) inflates the feature count (2500+ lagged features from ~13k time bins)
-# well past what the per-fold sample size supports, and (b) wastes most of
-# that dimensionality on redundant, not independent, signal.
-#
-# Design: sort active channels by depth (y, tie-broken by x) and slide a
-# window of CHANNELS (not microns) along that ordering -- a standard boxcar
-# smoothing filter over the depth axis, controlled directly by:
-#   --channel-smooth-window   W  = number of (depth-sorted) channels per group
-#   --channel-smooth-overlap  V  = number of channels shared between
-#                                  consecutive windows (must be < W)
-#   step = W - V   (spacing between window starts; step=W <=> V=0 <=> windows
-#                    exactly tile with no overlap)
-# Windows tile from the start (0, step, 2*step, ...); if that leaves a
-# leftover tail shorter than a full window, one final window is added ending
-# exactly at the last channel (so every active channel is always covered),
-# which can make that last window's overlap with its neighbor larger than V.
-# The resulting number of windows is a CONSEQUENCE of W, V and the channel
-# count -- not an input -- and is printed/returned so it's always visible.
-#
-# Channels at the same depth (this probe has ~2 columns per depth row;
-# x-span ~48um vs ~3800um in y) always land in the same window, since sorting
-# is depth-primary -- merging across x within a window is nearly free,
-# whereas merging across distant depths would throw away real spatial (and
-# therefore decodable) structure.
-#
-# Per-group output is the MEAN spike count per member channel (summed counts
-# / member count), not the raw sum: window occupancy isn't perfectly constant
-# (the coverage-guaranteeing final window can be larger), and dividing out
-# keeps every group's value directly interpretable as a local average firing
-# rate, comparable across groups regardless of how many raw channels fed it.
 
 
 def group_channels_sliding(spike_times_active, active_channel_idx, channel_positions, window_channels, overlap_channels):
@@ -931,6 +880,10 @@ def main():
     )
     if dropped_channel_idx.size:
         print(f"Dropped channel indices: {dropped_channel_idx.tolist()}")
+    print("Per-channel spike counts (ordered by channel_id AP number):")
+    ap_order = sorted(range(n_channels), key=lambda i: int(str(channel_ids[i]).split("AP")[-1]))
+    for ch in ap_order:
+        print(f"  row {ch} (channel_id={channel_ids[ch]}): {channel_spike_counts[ch]:,} spikes")
     spike_times_trim = spike_times_trim[active_channel_idx]
 
     channel_grouping_path = None
@@ -1114,6 +1067,13 @@ def main():
             "Motion-corrected peak depths (localized depth, before channel-snap)",
             fold_boundary_times,
         )
+        snapped_depths_trim = channel_positions[peak_rows_trim, 1]
+        plot_drift_scatter(
+            figs_dir / "drift_04_corrected_snapped_scatter.png",
+            peak_times_trim, snapped_depths_trim,
+            "Motion-corrected peak depths (snapped to nearest channel)",
+            fold_boundary_times,
+        )
 
     summary = {
         "config": {
@@ -1152,7 +1112,10 @@ def main():
         fold_train_scores = []
         xgb_channel_importances = []
 
+        print(f"Model {name}: starting ({args.n_splits} folds)...")
         for fold, (train_idx, test_idx) in enumerate(kf.split(X_lagged)):
+            fold_start = time.time()
+            print(f"Model {name}: starting fold {fold + 1}/{args.n_splits}...")
             model = clone(base_model)
             model.fit(X_lagged[train_idx], y[train_idx])
             pred = model.predict(X_lagged[test_idx])
@@ -1198,6 +1161,8 @@ def main():
                     len(pc_cols), n_lags_total, n_channels_used
                 ).sum(axis=1)  # (n_outputs, n_channels_used)
                 xgb_channel_importances.append(per_output_channel_importance)
+
+            print(f"Model {name}: finished fold {fold + 1}/{args.n_splits} in {time.time() - fold_start:.1f}s")
 
         overall = r2_score(y, oof_pred, multioutput="raw_values")
         mean_train = np.mean(np.asarray(fold_train_scores), axis=0)
