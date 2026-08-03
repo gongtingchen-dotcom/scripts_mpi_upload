@@ -2,3 +2,8 @@ density_decoding/slurm/
 motion/slurm/
 peak_detect_localise/slurm/
 preprocess/slurm/
+theo_decoding/Decoding_data/
+
+__pycache__/
+
+*.pyc
