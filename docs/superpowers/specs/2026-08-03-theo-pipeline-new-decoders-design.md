@@ -129,9 +129,69 @@ preserved as-is.
 ## `run_params.json` / `cv_summary.json`
 
 `run_params.json`'s `model_hyperparams` section gains one full entry per
-*available* model (all 8, not just the ones actually run this call) via the
+*available* model (all 7, not just the ones actually run this call) via the
 `<model>_params(args)` functions above — so any single run's JSON is
 self-sufficient to know every knob's value for every model, whether searched
-or not. `cv_summary.json`'s structure (per-model R2 scores) is unchanged, and
-already joins with `run_params.json` on the shared output folder for later
-analysis.
+or not. `cv_summary.json`'s per-model R2 score structure is unchanged (see
+below for the new `holdout_r2_per_output` addition), and already joins with
+`run_params.json` on the shared output folder for later analysis.
+
+## Preprocessing as a search axis (input & output)
+
+Prompted by the reference paper's preprocessing description (z-scored input
+for all methods; output demeaned for most methods, z-scored for SVR) — made
+configurable rather than hardcoded per-method, so it can itself be searched.
+
+**Current state, for reference:** input (`X_lagged`) is always z-scored via a
+hardcoded `StandardScaler` step in every model's `Pipeline`, fit per-fold on
+train only (this part is already correct/leak-free). Output (`y`) is not
+preprocessed by default; the optional `--normalize-pcs-separately` flag
+z-scores it, but computes the mean/std over the *entire* dataset **before**
+the CV split — leaking test-fold statistics into training. This flag is
+removed in the new script.
+
+**New flags:**
+- `--input-preprocess {zscore,demean,none}` (default `zscore`, matching
+  today). Implemented by picking the `Pipeline`'s scaler step:
+  `StandardScaler()` (zscore), `StandardScaler(with_std=False)` (demean), or
+  `"passthrough"` (none).
+- `--output-preprocess {none,demean,zscore}` (default `none`, matching
+  today's default-off behavior). Computed **inside the per-fold loop**, fit
+  on `y[train_idx]` only (`mu`, and `sd` if zscore), applied to both train and
+  eval portions using train's stats — fixing the leakage above.
+- **Predictions are always inverse-transformed back to original PC units
+  before computing R2 or plotting**, regardless of `--output-preprocess`.
+  This is required for the R2 numbers to stay comparable across different
+  `--output-preprocess` choices in a search — without it, switching this flag
+  would silently change what "R2" measures, defeating the point of searching
+  over it. (Note: for `demean`, R2 is mathematically shift-invariant so this
+  step is a no-op for that case either way; for `zscore` it isn't, since the
+  actual fitted model differs at that scale, so the inverse-transform
+  matters.)
+
+## Holdout evaluation (final, trustworthy number)
+
+Purpose: doing a large hyperparameter search and picking a winner by looking
+at test-fold R2 across many runs biases that winner's reported R2 upward
+(you're implicitly selecting hyperparameters against the test signal). Rather
+than rebuilding a full train/val/test split inside every fold of every search
+run, one contiguous block is reserved up front, untouched by the entire
+search, and evaluated only once for the config you ultimately pick.
+
+- `--holdout-frac` (default `0.0` = off, identical to today). When set (e.g.
+  `0.15`), the *last* `holdout_frac` fraction of the session (chronological
+  order) is sliced off `X_lagged`/`y` before `KFold` runs. Every search run's
+  CV folds only ever see the remaining portion — no code changes needed to
+  the CV loop itself.
+- `--evaluate-holdout` (flag, default off). When set: after the normal CV
+  loop, each selected model is refit on **all** non-holdout data (every
+  sample that fed the search's `KFold`) and scored once against the holdout
+  block. Preprocessing stats (if `--output-preprocess`/`--input-preprocess`
+  are non-`none`) are fit on that same non-holdout data.
+- Result stored under a separate, clearly-labeled key,
+  `holdout_r2_per_output`, in each model's `cv_summary.json` entry — never
+  mixed into `fold_r2_raw_values`/`mean_fold_r2_per_output`, so a results
+  table built later can't accidentally treat it as just another CV fold.
+- `run_params.json` records `holdout_frac` and `evaluate_holdout` under
+  `resolved`, and the exact holdout boundary (start index/time) once
+  computed.

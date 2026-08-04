@@ -1,3 +1,5 @@
+### this is to launch phy on Mac M1 with OpenGL 2.1 and QtWebEngine
+
 import os
 from pathlib import Path
 
