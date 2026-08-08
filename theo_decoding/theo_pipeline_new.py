@@ -19,7 +19,11 @@ sys.modules.setdefault("triton", None)
 # the buffer for a long time instead of reaching the log file as they
 # happen. Line-buffer explicitly so per-fold progress below (and everything
 # else) shows up in the log in real time, not just at process exit.
-sys.stdout.reconfigure(line_buffering=True)
+# Guarded: sys.stdout isn't a real file object with .reconfigure() when this
+# module is imported (rather than run as __main__) under a Jupyter kernel --
+# ipykernel's OutStream doesn't implement it -- so skip rather than crash.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(line_buffering=True)
 
 import argparse
 import datetime
@@ -211,19 +215,19 @@ def _nn_params(name, args, batch_size, n_layers):
 
 
 def fnn_params(args):
-    return _nn_params("FNN", args, batch_size=args.fnn_batch_size, n_layers=2)
+    return _nn_params("FNN", args, batch_size=args.fnn_batch_size, n_layers=args.fnn_n_layers)
 
 
 def rnn_params(args):
-    return _nn_params("RNN", args, batch_size=32, n_layers=None)
+    return _nn_params("RNN", args, batch_size=32, n_layers=None)  # RNN's module has no such param -- not CLI-tunable
 
 
 def gru_params(args):
-    return _nn_params("GRU", args, batch_size=32, n_layers=2)
+    return _nn_params("GRU", args, batch_size=32, n_layers=args.gru_n_layers)
 
 
 def lstm_params(args):
-    return _nn_params("LSTM", args, batch_size=32, n_layers=2)
+    return _nn_params("LSTM", args, batch_size=32, n_layers=args.lstm_n_layers)
 
 
 MODEL_PARAM_FNS = {
@@ -260,10 +264,12 @@ def build_output_tag(selected_models, args):
 
 
 def make_unique_output_dir(output_root, timestamp, tag):
-    """Create <output_root>/<timestamp>_<tag>, appending _1, _2, ... on
-    collision (e.g. two search jobs launched in the same second) rather than
-    silently merging two runs' outputs together."""
-    base = Path(output_root) / f"{timestamp}_{tag}"
+    """Create <output_root>/results/<timestamp>_<tag>, appending _1, _2, ...
+    on collision (e.g. two search jobs launched in the same second) rather
+    than silently merging two runs' outputs together. Runs live under a
+    results/ subfolder so they don't clutter --output-root alongside the
+    manifests, logs/, analysis_plots/, etc."""
+    base = Path(output_root) / "results" / f"{timestamp}_{tag}"
     candidate = base
     suffix = 1
     while True:
@@ -331,14 +337,19 @@ def parse_args():
     p.add_argument("--output-root", required=True, help="Parent directory; this run's own "
         "timestamped+tagged output folder is created underneath it (see build_output_tag).")
     p.add_argument("--animal", default="GLC6962")
-    p.add_argument("--background", default="eink")
+    p.add_argument("--neural-prefix", default="g_g0", help="Identifies which recording "
+        "session of this animal to use -- looked up against metadata_df's own "
+        "(animal, neural_prefix) -> dataset mapping (see behavior-loading code below). "
+        "Not the same as --background: an animal can have multiple sessions sharing one "
+        "background (e.g. GLC7189 has three separate eink recordings), so background alone "
+        "can't uniquely pick one.")
     p.add_argument("--pc-cols", default="PC1,PC2,PC3,PC4,PC5")
     p.add_argument("--dt", type=float, default=0.2)
     p.add_argument("--bin-before", type=int, default=6)
     p.add_argument("--bin-current", type=int, default=1)
     p.add_argument("--bin-after", type=int, default=6)
     p.add_argument("--n-splits", type=int, default=3)
-    p.add_argument("--models", default="WF,WC,SVR,XGB")
+    p.add_argument("--models", default="WF")
     p.add_argument("--seed", type=int, default=42)
     p.add_argument(
         "--motion-path",
@@ -361,6 +372,16 @@ def parse_args():
         action="store_true",
         help="Skip motion/drift correction and use each peak's originally detected "
         "channel_index as-is (old behavior).",
+    )
+    p.add_argument(
+        "--spike-thresh",
+        type=int,
+        default=0,
+        help="Drop channels with fewer than this many spikes in the analysis window "
+        "(counted after drift correction/channel-snapping, before --channel-smooth-window "
+        "grouping) -- a blunt way to cut input feature count by dropping low-firing "
+        "channels outright. 0 disables this (old behavior: only exactly-zero-spike "
+        "channels are dropped).",
     )
     p.add_argument(
         "--channel-smooth-window",
@@ -386,18 +407,18 @@ def parse_args():
         "train only. zscore = today's default behavior.",
     )
     p.add_argument(
-        "--output-preprocess", choices=["none", "demean", "zscore"], default="none",
+        "--output-preprocess", choices=["none", "demean", "zscore"], default="demean",
         help="Preprocessing applied to the target (y), fit per-fold on train only. "
         "Predictions are always inverse-transformed back to original PC units "
         "before scoring/plotting, so R2 stays comparable across choices.",
     )
-    p.add_argument("--device", choices=["cpu", "cuda"], default="cpu",
+    p.add_argument("--device", choices=["cpu", "cuda"], default="cuda",
         help="Device for FNN/RNN/GRU/LSTM (skorch NeuralNetRegressor). Ignored by "
         "WF/WC/SVR/XGB.")
 
     # --- Holdout (final, trustworthy number after a hyperparameter search) ---
     p.add_argument(
-        "--holdout-frac", type=float, default=0.0,
+        "--holdout-frac", type=float, default=0.2,
         help="Fraction (0-1) of the session's LAST samples (chronological) reserved "
         "and excluded from the search's KFold entirely. 0 = off (identical to no "
         "holdout). See --evaluate-holdout.",
@@ -418,7 +439,7 @@ def parse_args():
     p.add_argument("--wc-degree", type=int, default=3)
     # --- SVR ---
     p.add_argument("--svr-c", type=float, default=3.0)
-    p.add_argument("--svr-max-iter", type=int, default=50000)
+    p.add_argument("--svr-max-iter", type=int, default=5000)
     # --- XGB ---
     p.add_argument("--xgb-max-depth", type=int, default=3)
     p.add_argument("--xgb-n-estimators", type=int, default=200)
@@ -428,7 +449,9 @@ def parse_args():
     p.add_argument("--fnn-frac-dropout", type=float, default=0.25)
     p.add_argument("--fnn-max-epochs", type=int, default=10)
     p.add_argument("--fnn-batch-size", type=int, default=32)
-    # --- RNN ---
+    p.add_argument("--fnn-n-layers", type=int, default=2)
+    # --- RNN --- (no --rnn-n-layers: Neural_Decoding.nn.RNN's constructor has
+    # no n_layers param at all, unlike FNN/GRU/LSTM -- see rnn_params() below)
     p.add_argument("--rnn-num-units", type=int, default=400)
     p.add_argument("--rnn-frac-dropout", type=float, default=0.25)
     p.add_argument("--rnn-max-epochs", type=int, default=10)
@@ -436,10 +459,12 @@ def parse_args():
     p.add_argument("--gru-num-units", type=int, default=400)
     p.add_argument("--gru-frac-dropout", type=float, default=0.25)
     p.add_argument("--gru-max-epochs", type=int, default=10)
+    p.add_argument("--gru-n-layers", type=int, default=2)
     # --- LSTM ---
     p.add_argument("--lstm-num-units", type=int, default=400)
     p.add_argument("--lstm-frac-dropout", type=float, default=0.25)
     p.add_argument("--lstm-max-epochs", type=int, default=10)
+    p.add_argument("--lstm-n-layers", type=int, default=2)
 
     return p.parse_args()
 
@@ -914,6 +939,39 @@ def plot_density_before_after(
     plt.close(fig)
 
 
+def plot_spike_count_histogram(out_path, channel_spike_counts, n_channels, spike_thresh):
+    """Linear + log histogram of per-channel spike counts, with a red line at
+    --spike-thresh (if set) showing how many channels/spikes that cutoff
+    keeps -- same view used to pick the threshold in channel_selection.ipynb."""
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4.2))
+    axes[0].hist(channel_spike_counts, bins=40, color="#3B6FA0", edgecolor="white")
+    axes[0].set_xlabel("spike count (whole window)")
+    axes[0].set_ylabel("# channels")
+    axes[0].set_title("Linear scale")
+
+    axes[1].hist(
+        channel_spike_counts,
+        bins=np.logspace(np.log10(max(channel_spike_counts.min(), 1)), np.log10(channel_spike_counts.max()), 40),
+        color="#3B6FA0", edgecolor="white",
+    )
+    axes[1].set_xscale("log")
+    axes[1].set_xlabel("spike count (whole window, log scale)")
+    axes[1].set_title("Log scale -- easier to see the low-count tail")
+
+    if spike_thresh > 0:
+        n_kept = int((channel_spike_counts >= spike_thresh).sum())
+        pct_lost = 100 * channel_spike_counts[channel_spike_counts < spike_thresh].sum() / channel_spike_counts.sum()
+        label = f"spike_thresh={spike_thresh:,} -> keeps {n_kept}/{n_channels} channels, loses {pct_lost:.1f}% of spikes"
+        for ax in axes:
+            ax.axvline(spike_thresh, color="red", linestyle="--", linewidth=1.5, label=label)
+            ax.legend(fontsize=7.5, loc="upper right")
+
+    fig.suptitle(f"Per-channel spike counts, {n_channels} channels")
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
 def plot_xgb_loss_curves(out_path, curves, pc_cols, fold):
     n_out = len(pc_cols)
     fig, axes = plt.subplots(1, n_out, figsize=(3.6 * n_out, 3.2))
@@ -1057,23 +1115,52 @@ def main():
             print(f"WARNING: localized peaks path {localized_peaks_path} not found -- skipping drift correction.")
 
     texture_pca_df = pd.read_pickle(args.behavior_df_path)
-    pd.read_pickle(args.metadata_df_path)
+    metadata_df = pd.read_pickle(args.metadata_df_path)
 
     pc_cols = [c.strip() for c in args.pc_cols.split(",") if c.strip()]
     missing_cols = [c for c in pc_cols if c not in texture_pca_df.columns]
     if missing_cols:
         raise ValueError(f"Missing PC columns: {missing_cols}")
 
-    if "background" in texture_pca_df.columns:
-        beh = texture_pca_df[
-            (texture_pca_df["animal"] == args.animal)
-            & (texture_pca_df["background"].astype(str).str.lower() == args.background.lower())
-        ].copy()
-    else:
-        beh = texture_pca_df[texture_pca_df["animal"] == args.animal].copy()
-
+    # (animal, background) isn't a unique key -- e.g. GLC7189 has three separate
+    # eink recordings (neural_prefix c_g0/d_g0/g_g0 in metadata_df), so filtering
+    # on background alone can silently lump unrelated sessions together.
+    # (animal, neural_prefix) maps onto metadata_df's own "dataset" id, and
+    # texture_pca_df carries that same "dataset" column -- match through it instead.
+    #
+    # Even (animal, neural_prefix) isn't always unique, though: GLC6962/g_g0 hits
+    # both the real "freelymoving" session and a "reverse" bookkeeping row that
+    # shares its neural_prefix but was never turned into actual texture_pca_df
+    # frames (dataset "...191607_reverse" has zero rows there). Rather than
+    # hardcoding "exclude type=reverse" (fragile, and future dataset variants
+    # could add other labels), disambiguate operationally: keep only candidates
+    # whose dataset id actually has rows in texture_pca_df.
+    meta_match = metadata_df[
+        (metadata_df["animal"] == args.animal) & (metadata_df["neural_prefix"] == args.neural_prefix)
+    ]
+    if len(meta_match) == 0:
+        known = sorted(metadata_df.loc[metadata_df["animal"] == args.animal, "neural_prefix"].dropna().unique())
+        raise ValueError(
+            f"No metadata_df row for animal={args.animal!r}, neural_prefix={args.neural_prefix!r}. "
+            f"Known --neural-prefix values for this animal: {known}"
+        )
+    if len(meta_match) > 1:
+        has_data = meta_match["dataset"].isin(texture_pca_df["dataset"].unique())
+        meta_match = meta_match[has_data]
+        if len(meta_match) != 1:
+            raise ValueError(
+                f"animal={args.animal!r}, neural_prefix={args.neural_prefix!r} matches "
+                f"{len(has_data)} metadata_df rows, and {len(meta_match)} of those have any "
+                f"rows in texture_pca_df (need exactly 1): "
+                f"{metadata_df.loc[metadata_df['animal'] == args.animal, ['dataset', 'type']].to_dict('records')}"
+            )
+    dataset_id = meta_match["dataset"].iloc[0]
+    background = meta_match["background"].iloc[0]
+    beh = texture_pca_df[texture_pca_df["dataset"] == dataset_id].copy()
     if beh.empty:
-        raise ValueError("No behavior rows after filtering animal/background")
+        raise ValueError(f"No behavior rows for dataset={dataset_id!r} in {args.behavior_df_path}")
+    print(f"Behavior session: animal={args.animal}, neural_prefix={args.neural_prefix} -> "
+          f"dataset={dataset_id!r} (background={background}), {len(beh):,} frames.")
 
     beh_t = to_seconds(beh["time"])
     beh_outputs = beh[pc_cols].to_numpy(dtype=float)
@@ -1136,6 +1223,25 @@ def main():
     for ch in ap_order:
         print(f"  row {ch} (channel_id={channel_ids[ch]}): {channel_spike_counts[ch]:,} spikes")
     spike_times_trim = spike_times_trim[active_channel_idx]
+
+    # --- Spike-count threshold (post drift-correction/snapping, pre channel-smoothing) ---
+    # Blunter than --channel-smooth-window: outright drops low-firing channels
+    # instead of grouping them, to cut input feature count for the lag matrix below.
+    spike_thresh_dropped_idx = np.array([], dtype=int)
+    if args.spike_thresh > 0:
+        n_before = active_channel_idx.size
+        keep_mask = channel_spike_counts[active_channel_idx] >= args.spike_thresh
+        spike_thresh_dropped_idx = active_channel_idx[~keep_mask]
+        active_channel_idx = active_channel_idx[keep_mask]
+        spike_times_trim = spike_times_trim[keep_mask]
+        print(
+            f"Spike-count threshold (--spike-thresh {args.spike_thresh:,}): dropped "
+            f"{spike_thresh_dropped_idx.size:,}/{n_before:,} more channels "
+            f"({active_channel_idx.size:,} channels remain)."
+        )
+    plot_spike_count_histogram(
+        figs_dir / "channel_spike_count_histogram.png", channel_spike_counts, n_channels, args.spike_thresh,
+    )
 
     channel_grouping_path = None
     group_member_counts = None
@@ -1215,6 +1321,8 @@ def main():
         "total": int(n_channels),
         "active": int(active_channel_idx.size),
         "dropped_zero_spikes": dropped_channel_idx.tolist(),
+        "spike_thresh": args.spike_thresh,
+        "dropped_by_spike_thresh": spike_thresh_dropped_idx.tolist(),
         "channel_smooth_window_requested": args.channel_smooth_window,
         "channel_smooth_overlap_requested": (
             args.channel_smooth_overlap if args.channel_smooth_window > 0 else None
@@ -1267,6 +1375,12 @@ def main():
         )
         X_lagged_full = lagger_flat.fit_transform(X)
         X_lagged_seq_full = None
+
+    print(
+        f"Feature dimensions: {n_channels_used:,} channels x {n_lags_total:,} lag bins "
+        f"= {n_channels_used * n_lags_total:,} input features per sample "
+        f"(output dim = {len(pc_cols)}: {pc_cols})."
+    )
 
     # --- Holdout: reserve the last holdout_frac of the session, excluded
     # from the search's KFold entirely (see spec doc for rationale). The
@@ -1354,13 +1468,30 @@ def main():
             fold_boundary_times,
         )
 
+    if args.spike_thresh > 0:
+        # channel_positions[peak_rows_trim, 1] is the final assigned depth of
+        # every trimmed peak regardless of whether drift correction ran above
+        # (it's just each peak's home-channel depth when it didn't).
+        final_depths_trim = channel_positions[peak_rows_trim, 1]
+        kept_peak_mask = np.isin(peak_rows_trim, active_channel_idx)
+        plot_drift_scatter(
+            figs_dir / "drift_05_spike_thresh_dropped_scatter.png",
+            peak_times_trim[kept_peak_mask], final_depths_trim[kept_peak_mask],
+            f"Remaining spikes after --spike-thresh {args.spike_thresh:,} "
+            f"({active_channel_idx.size}/{n_channels} channels kept, "
+            f"{100 * kept_peak_mask.mean():.1f}% of peaks in window)",
+            fold_boundary_times,
+        )
+
     summary = {
         "config": {
             "recording_path": args.recording_path,
             "peaks_path": args.peaks_path,
             "behavior_df_path": args.behavior_df_path,
             "animal": args.animal,
-            "background": args.background,
+            "neural_prefix": args.neural_prefix,
+            "dataset": dataset_id,
+            "background": background,
             "pc_cols": pc_cols,
             "dt": args.dt,
             "bin_before": args.bin_before,
