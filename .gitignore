@@ -3,7 +3,9 @@ motion/slurm/
 peak_detect_localise/slurm/
 preprocess/slurm/
 tomato/slurm/
+theo_decoding/slurm/
 theo_decoding/Decoding_data/
+theo_decoding/*.log
 
 __pycache__/
 

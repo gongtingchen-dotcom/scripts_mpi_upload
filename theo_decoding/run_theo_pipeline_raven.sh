@@ -15,7 +15,15 @@
 #SBATCH --mem=16000
 #SBATCH --mail-user=gong.tingchen@gmail.com
 #SBATCH --mail-type=BEGIN,END,FAIL
-#SBATCH --time=23:00:00
+#SBATCH --time=23:59:59
+# Raised from 5h: the 5h cap was killing large-window/large-n_splits SVR/XGB
+# runs right before they finished (confirmed via several logs stopped mid-fold
+# at ~4.9h), burning the compute for nothing since a killed run leaves
+# run_params.json but no cv_summary.json -- build_search_grid.py's dedup then
+# treats it as permanently "still running" and never retries it. 23:59:59
+# (not 24:00:00 -- SLURM's --time format rejects a bare "24:00:00" as the
+# next day) gives the slowest custom-followup-sweep XGB/SVR combos room to
+# actually finish.
 #
 # One script, two ways to call it -- previously two separate files
 # (run_theo_pipeline_search_array_raven.sh calling run_theo_pipeline_new_raven.sh)

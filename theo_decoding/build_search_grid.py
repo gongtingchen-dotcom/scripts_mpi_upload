@@ -8,7 +8,10 @@ about datasets or defaults.
 Always scans <SEARCH_ROOT>/results/ and drops any row that's already been
 run OR is currently running (any run dir with a run_params.json counts --
 that file is written right at the start of a run, long before it finishes).
-Always overwrites search_manifest.tsv/.json in place -- there's no
+The dedup match includes --pc-cols (see PIPELINE_DEFAULTS), so multiple PC
+ranges can safely share one SEARCH_ROOT/results/ without a PC6-15 row ever
+being mistaken for an already-done PC1-5 row of the same hyperparameters.
+Always overwrites <manifest-name>.tsv/.json in place -- there's no
 versioning, this is meant to be regenerated freely.
 
 Usage:
@@ -16,9 +19,15 @@ Usage:
     nohup ./submit_search.sh search_manifest.tsv > submit_search.log 2>&1 &
     disown
 
-Don't rerun this while a previous submit_search.sh batch is still
-outstanding: a row that's queued but hasn't started yet has no results/
-entry, so it would look "new" again and get submitted a second time.
+Don't rerun this for the SAME --manifest-name while a previous
+submit_search.sh batch of it is still outstanding: a row that's queued but
+hasn't started yet has no results/ entry, so it would look "new" again and
+get submitted a second time. If you need a second sweep target (a different
+--pc-cols/--models combination) actively in flight against the same
+SEARCH_ROOT at the same time, give it a distinct --manifest-name -- the
+SLURM array tasks for each batch keep reading their own manifest file by
+path for as long as any of its rows are still pending, so two concurrent
+targets can never safely share one manifest file.
 
 Edit GRID / FIXED_ARGS / the sweep constants below to change what's
 searched -- they're the single source of truth, and are copied into
@@ -32,8 +41,6 @@ from pathlib import Path
 
 SEARCH_ROOT = Path("/nexus/posix0/MBR-neuralsystems/ephys/GLC7189/GLC7189_c_g0/theo_pipeline_params_search")
 RESULTS_ROOT = SEARCH_ROOT / "results"
-MANIFEST_PATH = SEARCH_ROOT / "search_manifest.tsv"
-GRID_RECORD_PATH = SEARCH_ROOT / "search_manifest.json"
 
 # =============================================================================
 # What to search
@@ -44,6 +51,22 @@ GRID_RECORD_PATH = SEARCH_ROOT / "search_manifest.json"
 # later in the same line wins (argparse takes the last value for a repeated
 # flag). This is the one place to point the search at a different animal,
 # session, or dataset path.
+#
+# All PC ranges for GLC7189_c_g0 share this one SEARCH_ROOT/results/ folder
+# (pc_cols is part of PIPELINE_DEFAULTS below, so a PC6-15 row is never
+# confused with an already-completed PC1-5 row of the same model +
+# hyperparameters). Editing --pc-cols here changes which PC range the NEXT
+# `python build_search_grid.py` invocation targets -- pair it with --models
+# to restrict to the right subset:
+#   - WF/WC/SVR/XGB are each wrapped in sklearn's MultiOutputRegressor,
+#     fitting a completely independent single-output model per PC, so a
+#     PC1-5 run and a PC6-15 run of these four are equivalent to one PC1-15
+#     run -- generate/submit them as two separate --pc-cols passes with
+#     --models WF,WC,SVR,XGB.
+#   - FNN/RNN/GRU/LSTM are genuinely joint multi-output networks (one shared
+#     hidden representation feeding every PC at once), so they can't be
+#     split this way -- always generate/submit these with the full PC1-15
+#     --pc-cols and --models FNN,RNN,GRU,LSTM.
 FIXED_ARGS = {
     "--recording-path": "/nexus/posix0/MBR-neuralsystems/ephys/GLC7189/GLC7189_c_g0/preprocessed",
     "--peaks-path": "/nexus/posix0/MBR-neuralsystems/ephys/GLC7189/GLC7189_c_g0/preprocessed/thresholding_peaks_3.5/peaks_combined2_sorted.npy",
@@ -54,7 +77,7 @@ FIXED_ARGS = {
     "--output-root": str(SEARCH_ROOT),
     "--animal": "GLC7189",
     "--neural-prefix": "c_g0",
-    "--pc-cols": "PC1,PC2,PC3,PC4,PC5",
+    "--pc-cols": "PC1,PC2,PC3,PC4,PC5,PC6,PC7,PC8,PC9,PC10,PC11,PC12,PC13,PC14,PC15",
     "--dt": 0.2,
     "--bin-before": 6,
     "--bin-current": 1,
@@ -77,6 +100,15 @@ GRID = {
         "--svr-c": [0.3, 1.0, 2.0, 3.0, 10.0, 30.0],
         "--svr-max-iter": [1000, 2000, 3500],
     },
+    # NOTE (SVR + --dt, PC1-15): --dt 0.5 is unworkable for SVR at this scale
+    # -- roughly doubles the sample count vs --dt 1 (finer time resolution),
+    # and SVR's fit cost blows up non-linearly with sample count. Confirmed
+    # across the whole --bin-before range in the phase-2 custom sweep:
+    # bin_before>=50 OOMs within ~35min (16GB mem limit), bin_before<50 runs
+    # but needs 1-8+ days per run (per-fold cost up to ~3.5h at
+    # bin_before=40), far past the 23:59:59 SLURM time cap. --dt 0.1 (part of
+    # DT_VALUES below) would be even worse. If SVR is ever swept over --dt
+    # again, keep it at --dt >= 1.
     "XGB": {
         "--xgb-max-depth": [1, 3, 5, 7, 9],
         "--xgb-n-estimators": [100, 200, 400, 600],
@@ -118,8 +150,8 @@ ALL_MODELS = list(GRID) + BASELINE_ONLY_MODELS
 # window is swept symmetrically (--bin-before = --bin-after = window,
 # --bin-current fixed at 1).
 DT_VALUES = [0.1, 0.2, 0.5, 1, 2, 4]
-WINDOW_VALUES = [1, 3, 5, 10, 15, 20]
-N_SPLITS_VALUES = [5, 10, 15, 20]
+WINDOW_VALUES = [1, 3, 5, 10, 15, 20, 25, 30, 35, 40]
+N_SPLITS_VALUES = [5, 10, 15, 20, 25, 30, 35, 40]
 
 # SVR-only additive sweep: --output-preprocess zscore instead of the default
 # demean, crossed with each surviving --svr-max-iter at SVR's default C
@@ -218,12 +250,19 @@ def format_row(model, overrides):
 
 # What an unset flag resolves to, for matching a manifest row against a real
 # run's cli_args -- must stay in sync with theo_pipeline_new.py's parse_args()
-# defaults. n_splits is the one exception: every row here sets --n-splits
-# explicitly via FIXED_ARGS, so this fallback only matters for results/
-# entries from before FIXED_ARGS existed, which got --n-splits 10 from the
-# old run_theo_pipeline_new_raven.sh wrapper, not argparse's own default of 3.
+# defaults. dt/bin_*/n_splits/pc_cols instead reference FIXED_ARGS directly
+# (not separately hardcoded) since those are never left at theo_pipeline_new.py's
+# own argparse default here -- every row sets them explicitly via FIXED_ARGS,
+# so the fallback that matters is THIS SEARCH_ROOT's current FIXED_ARGS, not
+# the pipeline's own default. This also makes pc_cols part of a run's identity
+# for dedup purposes -- required now that multiple PC ranges (see --pc-cols
+# above) can share one SEARCH_ROOT/results/ folder: without it, a PC6-15 row
+# would look identical to an already-completed PC1-5 row with the same
+# hyperparameters and get wrongly skipped as "already done".
 PIPELINE_DEFAULTS = {
-    "dt": 0.2, "bin_before": 6, "bin_current": 1, "bin_after": 6, "n_splits": 10,
+    "dt": FIXED_ARGS["--dt"], "bin_before": FIXED_ARGS["--bin-before"],
+    "bin_current": FIXED_ARGS["--bin-current"], "bin_after": FIXED_ARGS["--bin-after"],
+    "n_splits": FIXED_ARGS["--n-splits"], "pc_cols": FIXED_ARGS["--pc-cols"],
     "input_preprocess": "zscore", "output_preprocess": "demean", "spike_thresh": 0,
     "wc_degree": 3, "svr_c": 3.0, "svr_max_iter": 5000,
     "xgb_max_depth": 3, "xgb_n_estimators": 200, "xgb_learning_rate": 0.1,
@@ -306,12 +345,23 @@ def main():
     p.add_argument("--skip-pipeline-sweep", action="store_true", help="Omit the dt/window/n-splits sweep.")
     p.add_argument("--skip-svr-output-preprocess-sweep", action="store_true", help="Omit the SVR --output-preprocess sweep.")
     p.add_argument("--skip-spike-thresh-sweep", action="store_true", help="Omit the --spike-thresh sweep.")
+    p.add_argument("--manifest-name", default="search_manifest",
+        help="Base filename (no extension) for the manifest/grid-record pair. Use a distinct "
+        "name when generating for a different --pc-cols/--models target against a SEARCH_ROOT "
+        "that still has another target's manifest actively being submitted -- submit_search.sh "
+        "and the SLURM array tasks it launches keep reading this exact file by path for as long "
+        "as any of their rows are still pending, so overwriting it out from under an in-flight "
+        "submission would hand a pending task a completely different row than the one it was "
+        "queued for.")
     args = p.parse_args()
 
     models = [m.strip() for m in args.models.split(",")] if args.models else ALL_MODELS
     unknown = [m for m in models if m not in ALL_MODELS]
     if unknown:
         raise ValueError(f"Unknown model(s) {unknown}. Known: {ALL_MODELS}")
+
+    manifest_path = SEARCH_ROOT / f"{args.manifest_name}.tsv"
+    grid_record_path = SEARCH_ROOT / f"{args.manifest_name}.json"
 
     sections = {
         "hyperparameter grid": hyperparameter_grid_rows(models),
@@ -326,8 +376,8 @@ def main():
     new_rows, n_skipped = drop_already_done(all_rows)
 
     manifest_lines = [format_row(model, overrides) for model, overrides in new_rows]
-    MANIFEST_PATH.write_text("\n".join(manifest_lines) + ("\n" if manifest_lines else ""))
-    GRID_RECORD_PATH.write_text(json.dumps(
+    manifest_path.write_text("\n".join(manifest_lines) + ("\n" if manifest_lines else ""))
+    grid_record_path.write_text(json.dumps(
         {
             "fixed_args": FIXED_ARGS,
             "models": models,
@@ -349,10 +399,10 @@ def main():
     print(f"{'considered':<28} -> {len(all_rows)} rows")
     print(f"{'already done/running':<28} -> {n_skipped} rows")
     print(f"{'new':<28} -> {len(new_rows)} rows")
-    print(f"\nManifest        -> {MANIFEST_PATH}")
-    print(f"Grid definition -> {GRID_RECORD_PATH}")
+    print(f"\nManifest        -> {manifest_path}")
+    print(f"Grid definition -> {grid_record_path}")
     if new_rows:
-        print(f"\nSubmit with:\n  nohup ./submit_search.sh {MANIFEST_PATH} > submit_search.log 2>&1 &\n  disown")
+        print(f"\nSubmit with:\n  nohup ./submit_search.sh {manifest_path} > submit_search.log 2>&1 &\n  disown")
 
 
 if __name__ == "__main__":

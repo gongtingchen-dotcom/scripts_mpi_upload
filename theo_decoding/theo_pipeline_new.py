@@ -328,7 +328,11 @@ def build_run_params(
     }
 
 
-def parse_args():
+def build_parser():
+    """Split out from parse_args() so callers that only want the argument
+    definitions (e.g. analyze_param_search.ipynb, to read real defaults for
+    backfilling old runs' cli_args) don't have to fake required args through
+    an actual parse_args() call."""
     p = argparse.ArgumentParser(description="Run decoding CV on channel-wise MUA + PC outputs")
     p.add_argument("--recording-path", required=True)
     p.add_argument("--peaks-path", required=True)
@@ -466,7 +470,11 @@ def parse_args():
     p.add_argument("--lstm-max-epochs", type=int, default=10)
     p.add_argument("--lstm-n-layers", type=int, default=2)
 
-    return p.parse_args()
+    return p
+
+
+def parse_args():
+    return build_parser().parse_args()
 
 
 def to_seconds(series: pd.Series) -> np.ndarray:
