@@ -12,7 +12,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-core=1
 #SBATCH --cpus-per-task=4
-#SBATCH --mem=16000
+#SBATCH --mem=100000
 #SBATCH --mail-user=gong.tingchen@gmail.com
 #SBATCH --mail-type=BEGIN,END,FAIL
 #SBATCH --time=23:59:59

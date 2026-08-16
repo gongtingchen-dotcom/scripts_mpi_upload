@@ -89,6 +89,12 @@ VALID_MODELS = {"WF", "WC", "SVR", "XGB", "FNN", "RNN", "GRU", "LSTM"}
 SEQUENCE_MODELS = {"RNN", "GRU", "LSTM"}  # need the 3D (samples, timesteps, channels) lag tensor
 
 
+def pick_for_model(name, flat, seq):
+    """flat (2D) or seq (3D, samples x timesteps x channels), whichever
+    `name` needs -- see SEQUENCE_MODELS."""
+    return seq if name in SEQUENCE_MODELS else flat
+
+
 class SequenceScaler(BaseEstimator, TransformerMixin):
     """StandardScaler for 3D (samples, timesteps, channels) input.
 
@@ -349,9 +355,16 @@ def build_parser():
         "can't uniquely pick one.")
     p.add_argument("--pc-cols", default="PC1,PC2,PC3,PC4,PC5")
     p.add_argument("--dt", type=float, default=0.2)
-    p.add_argument("--bin-before", type=int, default=6)
-    p.add_argument("--bin-current", type=int, default=1)
-    p.add_argument("--bin-after", type=int, default=6)
+    p.add_argument("--window-before", type=float, default=1.2, help="Lag window looking "
+        "BACKWARD from each bin, in seconds (not bin count -- converted to "
+        "round(window_before / dt) bins internally, so the same --window-before means the "
+        "same physical lookback regardless of --dt). Default 1.2s matches this pipeline's "
+        "historical bin-count default (bin_before=6) at its default --dt of 0.2.")
+    p.add_argument("--bin-current", type=int, default=1, help="Bin count, NOT seconds -- "
+        "unlike --window-before/--window-after, this is never swept as an independent "
+        "physical duration in this project (always 1: just the current bin).")
+    p.add_argument("--window-after", type=float, default=1.2, help="Lag window looking "
+        "FORWARD from each bin, in seconds -- see --window-before.")
     p.add_argument("--n-splits", type=int, default=3)
     p.add_argument("--models", default="WF")
     p.add_argument("--seed", type=int, default=42)
@@ -712,11 +725,13 @@ def make_nn_step(module, y_dim, params):
 
 
 def build_models(args, y_dim, selected_models):
-    # NOTE: LagMat is applied once, globally, in chronological order in
-    # main() before the CV split, not independently within each fold's
-    # train/test slice -- see the module-level comment in the original
-    # theo_decode_cv.py for why. Only the scaler step still needs to be fit
-    # per-fold (on the training slice only) to avoid leakage.
+    # NOTE: LagMat is NOT a pipeline step here -- it's applied in main()'s
+    # lag() helper, separately to each fold's/split's own raw train or test
+    # block, after that block has already been carved out (matches
+    # Neural_Decoding_sklearn's own reference CV pattern: LagMat inside a
+    # Pipeline that cross_validate() fits per-fold). The scaler step below
+    # still needs to be fit per-fold (on the training slice only) to avoid
+    # leakage the same way.
     models = {}
     scaler_flat = make_scaler_step(args.input_preprocess, sequence=False)
 
@@ -1361,53 +1376,72 @@ def main():
     with open(formatted_path, "wb") as f:
         pickle.dump([X, y], f)
 
-    # --- Lag-expanded feature matrices, built ONCE on the full, correctly
-    # time-ordered array (see build_models()'s docstring for why). Flat 2D
-    # for WF/WC/SVR/XGB/FNN; 3D (samples, timesteps, channels) for RNN/GRU/LSTM.
-    n_lags_total = args.bin_before + args.bin_current + args.bin_after
+    # --window-before/--window-after are in SECONDS (a physical duration,
+    # independent of --dt); LagMat itself only understands bin COUNTS, so
+    # convert here, once. round(), not int(), so e.g. window=1.2s at dt=0.2
+    # gives exactly 6 bins, not 5 from float truncation.
+    bin_before = int(round(args.window_before / args.dt))
+    bin_after = int(round(args.window_after / args.dt))
+    n_lags_total = bin_before + args.bin_current + bin_after
     need_seq = bool(set(selected) & SEQUENCE_MODELS)
 
-    # LagMat's flat=True output is just its 3D (samples, timesteps, channels)
-    # array reshaped -- when a sequence model is selected, build that 3D
-    # array once and derive the flat view from it instead of recomputing the
-    # identical windowing twice.
-    if need_seq:
-        lagger_seq = LagMat(
-            bin_before=args.bin_before, bin_current=args.bin_current, bin_after=args.bin_after, flat=False,
-        )
-        X_lagged_seq_full = lagger_seq.fit_transform(X)
-        X_lagged_full = X_lagged_seq_full.reshape(X_lagged_seq_full.shape[0], -1)
-    else:
-        lagger_flat = LagMat(
-            bin_before=args.bin_before, bin_current=args.bin_current, bin_after=args.bin_after, flat=True,
-        )
-        X_lagged_full = lagger_flat.fit_transform(X)
-        X_lagged_seq_full = None
-
     print(
-        f"Feature dimensions: {n_channels_used:,} channels x {n_lags_total:,} lag bins "
-        f"= {n_channels_used * n_lags_total:,} input features per sample "
+        f"Lag window: {n_lags_total:,} bins/sample ({args.window_before:g}s before + current + "
+        f"{args.window_after:g}s after, at dt={args.dt:g}s) x {n_channels_used:,} channels = "
+        f"{n_channels_used * n_lags_total:,} input features per sample "
         f"(output dim = {len(pc_cols)}: {pc_cols})."
     )
 
-    # --- Holdout: reserve the last holdout_frac of the session, excluded
-    # from the search's KFold entirely (see spec doc for rationale). The
-    # search (KFold, per-fold train/test loop below) only ever sees
-    # X_lagged_search/y_search/t_centers_search.
-    n_total = X_lagged_full.shape[0]
+    def lag(X_raw):
+        """LagMat, applied to a single chronologically-contiguous raw block,
+        AFTER any train/test/holdout split -- never before one, and never to
+        a concatenation of two non-adjacent blocks. Rows within bin_before/
+        bin_after of X_raw's own edges get zero-padded there (matches
+        Neural_Decoding_sklearn's own reference CV pattern: LagMat inside
+        the pipeline, so it only ever sees one fold's own train or test
+        slice). See build_models() for the fuller rationale -- computing
+        this globally before splitting instead would let real neighboring
+        data leak across whatever boundary gets carved out afterward.
+        Returns (flat, seq_or_None): flat (2D) is what WF/WC/SVR/XGB/FNN
+        use; seq (3D, samples x timesteps x channels) is what RNN/GRU/LSTM
+        use -- both come from the same LagMat call when seq is needed, so
+        the identical windowing is never computed twice.
+
+        Cost note: called twice per fold (train slice + test slice) instead
+        of once globally, so total LagMat work scales with --n-splits, not
+        just dataset size -- roughly an --n-splits x multiplier on top of
+        LagMat's own O(samples x channels x lag_bins) cost, since each
+        fold's train slice is nearly the whole dataset. This is the
+        accepted trade for the leakage fix (see the fold loop below) and
+        matches the reference pattern; it's worth watching at --dt values
+        small enough to push lag_bins into the hundreds (window_before/
+        window_after are in seconds now -- see build_search_grid.py's
+        WINDOW_VALUES comment -- so a small --dt can quietly make lag_bins
+        much larger than the old bin-count scheme ever did)."""
+        seq = None
+        if need_seq:
+            seq = LagMat(bin_before=bin_before, bin_current=args.bin_current, bin_after=bin_after, flat=False).fit_transform(X_raw)
+            flat = seq.reshape(seq.shape[0], -1)
+        else:
+            flat = LagMat(bin_before=bin_before, bin_current=args.bin_current, bin_after=bin_after, flat=True).fit_transform(X_raw)
+        return flat, seq
+
+    # --- Holdout: reserve the last holdout_frac of the session. Split on
+    # the RAW (unlagged) data first, then lag the search and holdout blocks
+    # SEPARATELY -- see lag()'s docstring for why the order matters.
+    n_total = X.shape[0]
     n_holdout = int(round(n_total * args.holdout_frac)) if args.holdout_frac > 0 else 0
     holdout_start_idx = n_total - n_holdout
 
-    X_lagged_search = X_lagged_full[:holdout_start_idx]
-    X_lagged_seq_search = X_lagged_seq_full[:holdout_start_idx] if need_seq else None
+    X_search_raw = X[:holdout_start_idx]
     y_search = y[:holdout_start_idx]
     t_centers_search = t_centers[:holdout_start_idx]
+    X_lagged_search, X_lagged_seq_search = lag(X_search_raw)
 
     if n_holdout > 0:
-        X_lagged_holdout = X_lagged_full[holdout_start_idx:]
-        X_lagged_seq_holdout = X_lagged_seq_full[holdout_start_idx:] if need_seq else None
         y_holdout = y[holdout_start_idx:]
         t_centers_holdout = t_centers[holdout_start_idx:]
+        X_lagged_holdout, X_lagged_seq_holdout = lag(X[holdout_start_idx:])
         holdout_start_time = float(t_centers[holdout_start_idx])
         print(
             f"Holdout: reserved last {n_holdout:,}/{n_total:,} samples "
@@ -1438,7 +1472,7 @@ def main():
     print(f"Saved run params    -> {out_dir / 'run_params.json'}")
 
     kf = KFold(n_splits=args.n_splits, shuffle=False)
-    fold_starts = [test_idx[0] for _, test_idx in kf.split(X_lagged_search)]
+    fold_starts = [test_idx[0] for _, test_idx in kf.split(X_search_raw)]
     fold_boundary_times = t_centers_search[fold_starts[1:]]  # internal boundaries only
 
     plot_firing_rate_heatmap(figs_dir / "firing_rate_heatmap.png", X, t_centers, fold_boundary_times)
@@ -1502,9 +1536,14 @@ def main():
             "background": background,
             "pc_cols": pc_cols,
             "dt": args.dt,
-            "bin_before": args.bin_before,
+            "window_before": args.window_before,
             "bin_current": args.bin_current,
-            "bin_after": args.bin_after,
+            "window_after": args.window_after,
+            # Derived, not user-supplied -- window_before/window_after (seconds) above
+            # are the actual source of truth; these are only recorded for
+            # transparency/debugging (e.g. reading n_lags_total straight off this file).
+            "bin_before": bin_before,
+            "bin_after": bin_after,
             "n_splits": args.n_splits,
             "input_preprocess": args.input_preprocess,
             "output_preprocess": args.output_preprocess,
@@ -1535,29 +1574,45 @@ def main():
 
     for name in selected:
         base_model = available_models[name]
-        X_for_model = X_lagged_seq_search if name in SEQUENCE_MODELS else X_lagged_search
         oof_pred = np.full_like(y_search, np.nan, dtype=float)
         fold_test_scores = []
         fold_train_scores = []
         xgb_channel_importances = []
 
         print(f"Model {name}: starting ({args.n_splits} folds)...")
-        for fold, (train_idx, test_idx) in enumerate(kf.split(X_lagged_search)):
+        for fold, (train_idx, test_idx) in enumerate(kf.split(X_search_raw)):
             fold_start = time.time()
             print(f"Model {name}: starting fold {fold + 1}/{args.n_splits}...")
             model = clone(base_model)
 
-            y_train = y_search[train_idx]
-            mu, sd, y_train_p = fit_with_output_preprocess(model, X_for_model[train_idx], y_train, args.output_preprocess)
+            # Lag AFTER splitting, separately for train and test -- see
+            # lag()'s docstring for why. train_idx is two non-adjacent raw
+            # blocks glued together for every fold except the first/last
+            # (KFold's test block sits in the middle); lag() zero-pads at
+            # the resulting array's own start/end same as any other edge,
+            # which does mean a handful of rows right at that internal seam
+            # get a window blending two distant times as if adjacent -- a
+            # minor, accepted imperfection (matches Neural_Decoding_sklearn's
+            # own reference pattern), nowhere near as bad as the leakage it
+            # replaces (real train-adjacent data reaching into test, or vice
+            # versa, which is what applying LagMat globally before the split
+            # used to do).
+            X_train_flat, X_train_seq = lag(X_search_raw[train_idx])
+            X_test_flat, X_test_seq = lag(X_search_raw[test_idx])
+            X_train = pick_for_model(name, X_train_flat, X_train_seq)
+            X_test = pick_for_model(name, X_test_flat, X_test_seq)
 
-            pred = predict_original_scale(model, X_for_model[test_idx], mu, sd)
+            y_train = y_search[train_idx]
+            mu, sd, y_train_p = fit_with_output_preprocess(model, X_train, y_train, args.output_preprocess)
+
+            pred = predict_original_scale(model, X_test, mu, sd)
             oof_pred[test_idx] = pred
 
             test_score = r2_score(y_search[test_idx], pred, multioutput="raw_values")
             fold_test_scores.append(test_score.tolist())
 
             # In-sample (train) R2: the direct overfitting check.
-            train_pred = predict_original_scale(model, X_for_model[train_idx], mu, sd)
+            train_pred = predict_original_scale(model, X_train, mu, sd)
             train_score = r2_score(y_train, train_pred, multioutput="raw_values")
             fold_train_scores.append(train_score.tolist())
 
@@ -1568,8 +1623,8 @@ def main():
                 # real per-boosting-round train/held-out loss curve, in the same
                 # preprocessed-y space the production model above was fit in.
                 scaler_fitted = model.named_steps["scaler"]
-                Xtr_t = scaler_fitted.transform(X_for_model[train_idx]) if scaler_fitted != "passthrough" else X_for_model[train_idx]
-                Xte_t = scaler_fitted.transform(X_for_model[test_idx]) if scaler_fitted != "passthrough" else X_for_model[test_idx]
+                Xtr_t = scaler_fitted.transform(X_train) if scaler_fitted != "passthrough" else X_train
+                Xte_t = scaler_fitted.transform(X_test) if scaler_fitted != "passthrough" else X_test
                 y_test_p = apply_output_preprocess(y_search[test_idx], mu, sd)
                 curves = {}
                 for i, col in enumerate(pc_cols):
@@ -1640,10 +1695,14 @@ def main():
         # the per-fold search scores above (see spec doc for rationale).
         if args.evaluate_holdout and n_holdout > 0:
             print(f"Model {name}: refitting on full search set for holdout evaluation...")
-            X_for_model_holdout = X_lagged_seq_holdout if name in SEQUENCE_MODELS else X_lagged_holdout
+            # X_lagged_search/X_lagged_holdout were already lagged separately
+            # (see lag() above), so this refit's boundary with holdout is
+            # already clean -- no further trimming needed here.
+            X_for_model_refit = pick_for_model(name, X_lagged_search, X_lagged_seq_search)
+            X_for_model_holdout = pick_for_model(name, X_lagged_holdout, X_lagged_seq_holdout)
 
             holdout_model = clone(base_model)
-            mu_h, sd_h, _ = fit_with_output_preprocess(holdout_model, X_for_model, y_search, args.output_preprocess)
+            mu_h, sd_h, _ = fit_with_output_preprocess(holdout_model, X_for_model_refit, y_search, args.output_preprocess)
             holdout_pred = predict_original_scale(holdout_model, X_for_model_holdout, mu_h, sd_h)
             holdout_score = r2_score(y_holdout, holdout_pred, multioutput="raw_values")
 

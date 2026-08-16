@@ -79,9 +79,9 @@ FIXED_ARGS = {
     "--neural-prefix": "c_g0",
     "--pc-cols": "PC1,PC2,PC3,PC4,PC5,PC6,PC7,PC8,PC9,PC10,PC11,PC12,PC13,PC14,PC15",
     "--dt": 0.2,
-    "--bin-before": 6,
+    "--window-before": 1.2,
     "--bin-current": 1,
-    "--bin-after": 6,
+    "--window-after": 1.2,
     "--n-splits": 10,
 }
 FIXED_ARGS_STR = " ".join(f"{k} {v}" for k, v in FIXED_ARGS.items())
@@ -147,8 +147,22 @@ ALL_MODELS = list(GRID) + BASELINE_ONLY_MODELS
 # every model, so instead of crossing them into GRID above (which would
 # multiply its size by len(DT)*len(WINDOW)*len(N_SPLITS)), each combination
 # is run once per model AT THAT MODEL'S DEFAULT hyperparameters. The lag
-# window is swept symmetrically (--bin-before = --bin-after = window,
+# window is swept symmetrically (--window-before = --window-after = window,
 # --bin-current fixed at 1).
+#
+# WINDOW_VALUES is in SECONDS, not bin count -- passed straight through to
+# --window-before/--window-after (theo_pipeline_new.py converts to bins
+# internally via round(window / dt)). This is what makes the dt x window x
+# n_splits heatmaps' window axis directly comparable across every dt facet:
+# under the old bin-count scheme, the same literal "--bin-before 10" meant a
+# 1s lookback at dt=0.1 but a 40s lookback at dt=4 -- confounding window
+# duration with dt instead of letting them vary independently. Same 10
+# literal values kept as before this migration (just reinterpreted as
+# seconds), so this is a units fix, not a redesign of what's covered --
+# note that DOES shift the actual feature-matrix size tested at small dt: at
+# dt=0.1, window=40 now means 400 lag bins (was 40), not 40 bins (4s) --
+# watch for the same OOM/runtime blowup pattern documented on GRID["SVR"]
+# above if dt gets swept down near 0.1-0.2 again for a model sensitive to it.
 DT_VALUES = [0.1, 0.2, 0.5, 1, 2, 4]
 WINDOW_VALUES = [1, 3, 5, 10, 15, 20, 25, 30, 35, 40]
 N_SPLITS_VALUES = [5, 10, 15, 20, 25, 30, 35, 40]
@@ -205,12 +219,13 @@ def hyperparameter_grid_rows(models):
 
 
 def pipeline_sweep_rows(models):
-    """dt x lag-window x n-splits, each model at its own default hyperparams."""
+    """dt x lag-window(seconds) x n-splits, each model at its own default
+    hyperparams."""
     rows = []
     for model in models:
         for dt, window, n_splits in itertools.product(DT_VALUES, WINDOW_VALUES, N_SPLITS_VALUES):
             overrides = {
-                "--dt": dt, "--bin-before": window, "--bin-current": 1, "--bin-after": window,
+                "--dt": dt, "--window-before": window, "--bin-current": 1, "--window-after": window,
                 "--n-splits": n_splits, **MODEL_ANCHOR_OVERRIDES.get(model, {}),
             }
             rows.append((model, overrides))
@@ -260,8 +275,8 @@ def format_row(model, overrides):
 # would look identical to an already-completed PC1-5 row with the same
 # hyperparameters and get wrongly skipped as "already done".
 PIPELINE_DEFAULTS = {
-    "dt": FIXED_ARGS["--dt"], "bin_before": FIXED_ARGS["--bin-before"],
-    "bin_current": FIXED_ARGS["--bin-current"], "bin_after": FIXED_ARGS["--bin-after"],
+    "dt": FIXED_ARGS["--dt"], "window_before": FIXED_ARGS["--window-before"],
+    "bin_current": FIXED_ARGS["--bin-current"], "window_after": FIXED_ARGS["--window-after"],
     "n_splits": FIXED_ARGS["--n-splits"], "pc_cols": FIXED_ARGS["--pc-cols"],
     "input_preprocess": "zscore", "output_preprocess": "demean", "spike_thresh": 0,
     "wc_degree": 3, "svr_c": 3.0, "svr_max_iter": 5000,
@@ -273,15 +288,45 @@ PIPELINE_DEFAULTS = {
 }
 NUMERIC_KEYS = {k for k, v in PIPELINE_DEFAULTS.items() if isinstance(v, (int, float))}
 
+# Runs from before --window-before/--window-after (seconds) existed stored
+# bin_before/bin_after -- raw bin COUNTS -- in cli_args instead, under
+# theo_pipeline_new.py's then-defaults of 6/6. Only used as the fallback
+# bin count when deriving such a run's equivalent window in seconds below;
+# never used directly as a PIPELINE_DEFAULTS value.
+_LEGACY_BIN_DEFAULTS = {"window_before": 6, "window_after": 6}
+
+
+def legacy_window_seconds(values, window_key):
+    """window_before/window_after (seconds) for a run whose cli_args
+    predates that flag -- a pre-migration run has no such key at all (it
+    predates the flag), so naively falling back to today's default window
+    would make every one of those runs look like it tested exactly that
+    default regardless of what it actually ran, corrupting any downstream
+    use of the value (dedup matching here, or historical-run plotting in
+    analyze_param_search.ipynb, which imports and calls this same
+    function -- the migration logic only lives here, once).
+
+    Derives the true equivalent window in seconds from that run's own
+    bin_before/bin_after (bin COUNT) * dt instead -- the same physical
+    quantity, just read from its old representation."""
+    legacy_key = "bin_before" if window_key == "window_before" else "bin_after"
+    bin_count = values.get(legacy_key, _LEGACY_BIN_DEFAULTS[window_key])
+    dt_val = values.get("dt", PIPELINE_DEFAULTS["dt"])
+    return bin_count * dt_val
+
 
 def resolve_config(values):
     """Fill in PIPELINE_DEFAULTS for anything missing from `values` (a dict
     keyed by PIPELINE_DEFAULTS' own names, e.g. {"dt": 0.5} -- either a run's
     cli_args, or a row's overrides after flag names are underscored), casting
-    numeric fields to float for stable comparison."""
+    numeric fields to float for stable comparison. window_before/window_after
+    get special-cased -- see legacy_window_seconds()."""
     cfg = {}
     for k, default in PIPELINE_DEFAULTS.items():
-        v = values.get(k, default)
+        if k in ("window_before", "window_after") and k not in values:
+            v = legacy_window_seconds(values, k)
+        else:
+            v = values.get(k, default)
         cfg[k] = float(v) if k in NUMERIC_KEYS and v is not None else v
     return cfg
 
@@ -339,6 +384,8 @@ def drop_already_done(rows):
 # =============================================================================
 
 def main():
+    global SEARCH_ROOT, RESULTS_ROOT, FIXED_ARGS_STR
+
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--models", default=None,
         help=f"Comma-separated subset of models to include (default: all of {ALL_MODELS}).")
@@ -353,7 +400,20 @@ def main():
         "as any of their rows are still pending, so overwriting it out from under an in-flight "
         "submission would hand a pending task a completely different row than the one it was "
         "queued for.")
+    p.add_argument("--search-root", default=None,
+        help="Point this generation at a different results tree entirely (default: SEARCH_ROOT "
+        "above). Use this for a search that shouldn't mix with an existing SEARCH_ROOT's "
+        "results/ at all -- e.g. after a pipeline correctness fix, where old and new runs "
+        "of the same hyperparameters are NOT the same experiment and dedup must never treat "
+        "one as satisfying the other. Dataset/animal args (--recording-path etc.) are "
+        "unaffected -- only where results get written and where dedup looks for existing ones.")
     args = p.parse_args()
+
+    if args.search_root:
+        SEARCH_ROOT = Path(args.search_root)
+        RESULTS_ROOT = SEARCH_ROOT / "results"
+        FIXED_ARGS["--output-root"] = str(SEARCH_ROOT)
+        FIXED_ARGS_STR = " ".join(f"{k} {v}" for k, v in FIXED_ARGS.items())
 
     models = [m.strip() for m in args.models.split(",")] if args.models else ALL_MODELS
     unknown = [m for m in models if m not in ALL_MODELS]
