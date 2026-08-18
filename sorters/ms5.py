@@ -187,7 +187,7 @@ def main():
         # =========================
         # Run MS5
         # =========================
-        # All processing that needs the cached recording must happen INSIDE this block
+        
         sorting = ms5.sorting_scheme2(
             recording=rec_cached,
             sorting_parameters=sorting_parameters,
