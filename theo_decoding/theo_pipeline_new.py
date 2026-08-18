@@ -87,6 +87,8 @@ except ImportError:
 
 VALID_MODELS = {"WF", "WC", "SVR", "XGB", "FNN", "RNN", "GRU", "LSTM"}
 SEQUENCE_MODELS = {"RNN", "GRU", "LSTM"}  # need the 3D (samples, timesteps, channels) lag tensor
+EARLY_ABORT_EXIT_CODE = 75  # sysexits.h EX_TEMPFAIL -- distinct from a genuine crash (exit 1),
+# so sacct/log review can tell "gave up early on purpose" apart from "actually broke" at a glance.
 
 
 def pick_for_model(name, flat, seq):
@@ -368,6 +370,14 @@ def build_parser():
     p.add_argument("--n-splits", type=int, default=3)
     p.add_argument("--models", default="WF")
     p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--runtime-abort-budget-hours", type=float, default=23.0, help="After "
+        "each model's 2nd fold finishes, project that model's total fold time (2-fold "
+        "average x n_splits) plus whatever's already elapsed since the script started, and "
+        "compare against this budget. If projected total exceeds it, abort immediately "
+        "(nonzero exit) instead of continuing to burn the SLURM allocation on a run that "
+        "can't finish in time -- see EARLY_ABORT_EXIT_CODE. Default leaves ~1h of margin "
+        "under run_theo_pipeline_raven.sh's --time=23:59:59 for setup overhead already "
+        "spent before the fold loop and any cleanup/plotting after it.")
     p.add_argument(
         "--motion-path",
         default=None,
@@ -1063,6 +1073,7 @@ def plot_train_vs_test_r2(out_path, summary):
 
 
 def main():
+    job_start_time = time.time()  # for the per-model early-abort projection below, not wall-clock logging
     args = parse_args()
     np.random.seed(args.seed)
 
@@ -1580,6 +1591,7 @@ def main():
         xgb_channel_importances = []
 
         print(f"Model {name}: starting ({args.n_splits} folds)...")
+        model_start = time.time()
         for fold, (train_idx, test_idx) in enumerate(kf.split(X_search_raw)):
             fold_start = time.time()
             print(f"Model {name}: starting fold {fold + 1}/{args.n_splits}...")
@@ -1648,6 +1660,36 @@ def main():
                 xgb_channel_importances.append(per_output_channel_importance)
 
             print(f"Model {name}: finished fold {fold + 1}/{args.n_splits} in {time.time() - fold_start:.1f}s")
+
+            # Runtime tripwire: 2 folds is enough to get a stable per-fold
+            # time estimate (fold cost is ~constant across folds -- see the
+            # dt=0.2/window=32 WC jobs from earlier this week, whose fold
+            # times varied <2% fold-to-fold), so project the REST of this
+            # model's folds at that pace, add whatever's already elapsed
+            # since the script started (covers setup overhead already paid
+            # and any earlier models in this same job), and compare against
+            # budget. Catches the "doomed from the start" case (see
+            # 29358087_5/6/7, cancelled by hand after ~8h -- this replaces
+            # that manual monitoring) at ~2 folds' cost instead of the full
+            # 24h SLURM allocation.
+            if fold == 1:
+                elapsed_this_model = time.time() - model_start
+                avg_fold_time = elapsed_this_model / (fold + 1)
+                remaining_folds = args.n_splits - (fold + 1)
+                projected_job_total = (time.time() - job_start_time) + avg_fold_time * remaining_folds
+                budget_sec = args.runtime_abort_budget_hours * 3600
+                if projected_job_total > budget_sec:
+                    print(
+                        f"ABORT: Model {name} projected total job runtime "
+                        f"{projected_job_total / 3600:.2f}h (avg {avg_fold_time:.1f}s/fold over "
+                        f"the first 2 folds x {remaining_folds} folds remaining, plus "
+                        f"{(time.time() - job_start_time) / 3600:.2f}h already elapsed) exceeds "
+                        f"the {args.runtime_abort_budget_hours:g}h budget -- killing this run now "
+                        f"instead of burning the full SLURM allocation with no result. "
+                        f"(dt={args.dt:g}, window_before={args.window_before:g}, "
+                        f"n_splits={args.n_splits}, models={args.models})"
+                    )
+                    sys.exit(EARLY_ABORT_EXIT_CODE)
 
         overall = r2_score(y_search, oof_pred, multioutput="raw_values")
         mean_train = np.mean(np.asarray(fold_train_scores), axis=0)
