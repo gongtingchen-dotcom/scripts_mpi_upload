@@ -1,3 +1,14 @@
+'''
+NOT USED — use preprocess_artifact_removal_by_sqr_deviation.py (via run_preprocess.sh)
+instead, the current pipeline.
+
+**NOTE (legacy/reference, not part of the maintained pipeline):
+** kept here for reference only. It is a simpler, general pipeline: 
+it assumes `outliers_list_sqr_overview.txt` already exists, 
+uses it to blank out the eInk artifacts, 
+and then runs kilosort4 sorting directly on the cleaned recording with a custom set of sorter parameters.
+'''
+
 # just for this machine
 import os
 # os.environ["CUDA_VISIBLE_DEVICES"] = "2"

@@ -1,5 +1,12 @@
 #!/usr/bin/env python
 
+# NOT USED — use preprocess_artifact_removal_by_sqr_deviation.py (via run_preprocess.sh)
+# instead, the current pipeline.
+#
+# NOTE (legacy/reference, not used anymore):
+# Earlier, exploratory version of the preprocessing pipeline.
+#
+
 # %%
 # just for this machine
 import os

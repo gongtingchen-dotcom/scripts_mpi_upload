@@ -1,4 +1,26 @@
 #!/usr/bin/env python
+#
+# ============================================================================
+# THE preprocessing pipeline for SpikeGLX Neuropixels recordings.
+# Run via `run_preprocess.sh` (sbatch), or directly as:
+#   python preprocess_artifact_removal_by_sqr_deviation.py --animal_tag <tag> --exp_tag <tag> [<tag> ...]
+#
+# WHAT IT DOES, end to end, for one recording:
+#   1. Loads the raw recording (or concatenates several, if multiple --exp_tag
+#      values are given — e.g. a session that was paused/resumed).
+#   2. Saves a handful of preview plots of the raw signal for a quick visual
+#      sanity check before spending compute on the rest of the pipeline.
+#   3. Highpass-filters, then detects and removes bad channels and applies common median
+#      referencing.
+#   4. Extracts TTL pulse times from the sync/behaviour channel.
+#   5. Detects and zeroes out "eInk" artifacts 
+#   6. Re-scans the cleaned recording as a sanity check that no large
+#      artifacts remain.
+#   7. Rescales the recording to a common per-recording amplitude scale and
+#      saves it as float16 to a "preprocessed" folder — this is the file
+#      that downstream spike-sorting jobs (e.g. kilosort4) consume.
+#
+# ============================================================================
 
 # %%
 # just for this machine
@@ -21,6 +43,11 @@ import argparse
 si.set_global_job_kwargs(n_jobs=8)
 
 # %% load_rec
+# Loads either a raw SpikeGLX folder (detected by "imec" in the path) or an
+# already-saved SpikeInterface recording folder (e.g. a previously saved
+# concatenated or preprocessed recording), optionally sliced to [start_sec, end_sec].
+# Centralising this here means every load in the script (raw preview, TTLs,
+# artifact detection, etc.) goes through the same time-slicing logic.
 def load_rec(rec_dir, start_sec=None, end_sec=None):
     if "imec" in rec_dir:
         rec = si.read_spikeglx(rec_dir, stream_name='imec0.ap', load_sync_channel=False)
@@ -55,6 +82,11 @@ def _find_rec_dir(animal_tag, exp_tag):
     Return the recording directory for a single exp_tag.
     Priority: imec folder > concat_rec > preprocessed > raw
     Raises FileNotFoundError with a listing if nothing is found.
+
+    Prefers the raw imec folder when present so preprocessing always starts
+    from the original data rather than accidentally re-preprocessing an
+    already-processed copy; falls back to a saved concat_rec (see the
+    multi-exp_tag branch below) if that's what's available instead.
     """
     exp_num = f'{animal_tag}_{exp_tag}'
     base    = f"/nexus/posix0/MBR-neuralsystems/ephys/{animal_tag}/{exp_num}"
@@ -85,6 +117,12 @@ if len(exp_tags) == 1:
 
 else:
     # ── multiple recordings — concatenate and save ────────────────────────
+    # Some sessions are split across several separate SpikeGLX recordings
+    # (e.g. the acquisition was paused and restarted). Concatenate them into
+    # one continuous recording before running the rest of the pipeline, so
+    # artifact/TTL detection and channel stats are computed over the whole
+    # session rather than separately per chunk. The result is cached to disk
+    # (concat_path) so re-running the script doesn't redo this every time.
     joined_tag  = "_".join(exp_tags)
     exp_num     = f'{animal_tag}_{joined_tag}'
     # base_folder = f"/ptmp/gongt/{animal_tag}/{exp_num}"
@@ -132,6 +170,10 @@ min_start = int(np.ceil(t_start / 60))
 fs = rec.get_sampling_frequency()
 
 # %%
+# Quick visual QC: dump a snapshot image every 5 minutes of the raw, unprocessed
+# signal so an obvious recording problem (dead channels, no signal, huge
+# artifacts) can be spotted before the rest of the pipeline runs. Skipped if
+# the folder already has images in it, so re-running the script is cheap.
 save_folder = os.path.join(results_folder_check, "raw_neural_data")
 
 if not os.path.exists(save_folder) or len(os.listdir(save_folder)) == 0:
@@ -157,8 +199,15 @@ else:
 
 # %%
 # preprocess
+# Highpass filter first (removes slow drift / LFP) so that the bad-channel
+# detector and the channel-std check below reflect spiking-band noise
+# characteristics rather than being dominated by low-frequency drift.
 rec0 = load_rec(rec_dir, start_sec=start_sec, end_sec=end_sec)
 rec = si.highpass_filter(rec0, dtype="float32")
+# First bad-channel pass: SpikeInterface's built-in detector (dead / noisy /
+# out-of-brain channels). Removing these before common referencing matters —
+# a bad channel would otherwise corrupt the common reference for every other
+# channel.
 bc, labels = si.detect_bad_channels(rec, seed=0)
 print(f"{bc=}")
 
@@ -166,12 +215,17 @@ print(f"{bc=}")
 rec = rec.remove_channels(bc)
 
 # %%
+# Second bad-channel pass: sample random chunks across the recording and look
+# at each channel's standard deviation. Catches channels that are abnormally
+# noisy but weren't flagged by si.detect_bad_channels above.
 chunks = si.get_random_data_chunks(rec,  num_chunks_per_segment=100, seed=0)
 
 # %%
 std = chunks.std(0)
 
 # %%
+# Channels whose std is a clear outlier relative to the rest of the array are
+# flagged for removal below (and the plot is saved for manual review).
 peaks, _ = scipy.signal.find_peaks(std, threshold=0.75)
 plt.plot(std)
 plt.plot(peaks, std[peaks], "x")
@@ -190,6 +244,10 @@ plt.close()
 
 # %%
 rec = rec.remove_channels(rec.channel_ids[peaks])
+# Common median referencing: subtracts the median across channels at each
+# time point, removing correlated noise shared by (nearly) all channels at
+# once (e.g. shared electrical/environmental noise) that isn't real,
+# per-channel neural signal.
 rec = si.common_reference(rec)
 
 # %%
@@ -203,18 +261,24 @@ rec = si.common_reference(rec)
 # ## Extract TTLs
 
 # %%
-### Extract TTLs ### 
+### Extract TTLs ###
+# TTL channels carry digital sync/event pulses (not neural signal) used to
+# align the recording with behaviour/stimulus timing downstream.
 raw_rec = load_rec(rec_dir, start_sec=start_sec, end_sec=end_sec)
 raw_rec
 
 # %%
 ttlName = ['sync','stim','side','overview','hi-res']
-# input_name = input("Enter a name: ")
+# input_name = input("Enter a name: ")  # was interactive; fixed to "overview" for batch/SLURM runs
 input_name = "overview"
 chanInterest = ttlName.index(input_name)
 chanInterest
 
 # %%
+# Normalise the channel to [0, 1] and threshold at the midpoint to turn the
+# (roughly square-wave) TTL signal into a clean binary on/off trace, then take
+# the derivative to find the sample indices where it transitions — those are
+# the pulse onset (rising, diff > 0) and offset (falling, diff < 0) times.
 ttl_sig = raw_rec.get_traces()[:,chanInterest]
 norm_sig = (ttl_sig - np.min(ttl_sig)) / (np.max(ttl_sig) - np.min(ttl_sig))
 #median_signal = np.median(ttl_sig[ttl_sig > 0])
@@ -241,20 +305,33 @@ with open(save_filename, "w") as f:
 
 # %%
 ################ BY SQR DEVIATION ###################
-#### if triggers already known ## 
+# See the module docstring at the top of this file for the full reasoning
+# behind this method vs. the earlier mean/std approach. Short version: scan
+# the recording in overlapping 60s windows; within each window, estimate a
+# baseline mean/std from the "quiet" middle of the distribution (20th-80th
+# percentile, so the estimate isn't itself skewed by the artifact); flag
+# samples whose squared deviation from that baseline exceeds a threshold; and
+# keep only outlier samples that have a neighbouring outlier sample, to
+# reject isolated single-sample noise and keep sustained artifact excursions.
+#
+#### if triggers already known ##
 outlier_file = os.path.join(results_folder_check, "outliers_list_sqr_overview.txt")
 if os.path.exists(outlier_file):
     print(f"Reading existing outlier list from {outlier_file}...")
     outliers_list = np.loadtxt(outlier_file, delimiter=',')
-else: 
+else:
     print("Outlier list not found. Finding eInk artifacts...")
+    # Note: this re-loads the raw (unfiltered) recording rather than reusing
+    # the highpass+CAR'd `rec` from the preprocessing step above — eInk
+    # artifacts are large-amplitude and broadband enough to stand out
+    # directly in the raw trace without needing that filtering first.
     rec1 = load_rec(rec_dir, start_sec=start_sec, end_sec=end_sec)
     save_folder = Path(os.path.join(results_folder_check, "artifact_plots_sqd", "detection"))
     save_folder.mkdir(parents=True, exist_ok=True)
 
     window_size_sec = 60
     std_threshold = 1000
-    overlap_sec = 1 #when scanning the entire trace, the next chunk has 1s overlap with the previous chunk ==> aoivd an artifact being split into 2 chunks 
+    overlap_sec = 1 #when scanning the entire trace, the next chunk has 1s overlap with the previous chunk ==> aoivd an artifact being split into 2 chunks
     total_samples = rec1.get_num_samples(segment_index=0)
 
     window_size = int(window_size_sec * fs)-1
@@ -269,15 +346,24 @@ else:
         end_sample = min(start_sample + window_size, total_samples)
         print(f"Processing samples {start_sample} to {end_sample}")
         trace = rec1.get_traces(0, start_sample, end_sample)
-        trace_mean = np.mean(trace, axis=1)    
+        # Average across channels: an eInk artifact hits (nearly) all channels
+        # at once, while neural noise is largely uncorrelated between channels,
+        # so averaging boosts the artifact relative to the noise floor.
+        trace_mean = np.mean(trace, axis=1)
         mean_val = np.mean(trace_mean)
         std_val = np.std(trace_mean)
         time = np.arange(len(trace_mean)) + start_sample
         print(len(time))
 
+        # Robust baseline: mean/std computed only from the middle 20th-80th
+        # percentile of this window, so a large artifact in the tails doesn't
+        # contaminate the very baseline used to detect it.
         p_low, p_high = np.percentile(trace_mean, [20, 80])
         mask = (trace_mean >= p_low) & (trace_mean <= p_high)
         mean_robust, std_robust = np.mean(trace_mean[mask]), np.std(trace_mean[mask])
+        # Squared deviation from that robust baseline: non-negative (one
+        # threshold catches both large positive and negative excursions) and
+        # disproportionately amplifies large deviations relative to small ones.
         sq_dev = (trace_mean - mean_robust) ** 2
         print(len(sq_dev))
         sq_dev_robust = sq_dev[mask]
@@ -297,9 +383,13 @@ else:
         ax2.grid(True, alpha=0.3)
         
         outliers_sq_local = sq_dev > thresh_sq  # Local indices for plotting
-        if np.any(outliers_sq_local): 
+        if np.any(outliers_sq_local):
             outlier_indices_local = np.where(outliers_sq_local)[0]
 
+            # Keep a candidate outlier sample only if the sample immediately
+            # before or after it is also an outlier — rejects isolated
+            # single-sample noise spikes, keeps sustained excursions (what a
+            # real eInk artifact looks like).
             keep_mask = np.zeros_like(outlier_indices_local, dtype=bool)
             for i, idx in enumerate(outlier_indices_local):
                 has_prev_neighbor = (i > 0) and (outlier_indices_local[i-1] == idx - 1)
@@ -344,6 +434,8 @@ print(list_triggers)
 list_triggers_samp = list_triggers*fs
 print(len(list_triggers))
 
+# Zero out a window around each detected artifact onset (150ms padding on
+# either side) so the large-amplitude artifact doesn't corrupt spike sorting.
 ms_before = 150
 ms_after = 150
 if len(list_triggers_samp) == 0:
@@ -355,6 +447,12 @@ else:
 
 # %%
 ####### SWEEP ACROSS THE WHOLE DATASET - CHECK IF ALL ARTIFACTS ARE REMOVED ###########
+# Independent sanity check, not exhaustive artifact detection: re-scan the
+# cleaned recording with a simpler mean +/- N*std threshold (no robust
+# baseline, no neighbour filtering) and flag any window where too many
+# samples still exceed it. If `remaining_outliers` ends up non-empty (see
+# below), that's a signal to check the plots in artifact_plots_sqd/confirmation
+# manually — it doesn't fail the run automatically.
 rec1 = load_rec(rec_dir, start_sec=start_sec, end_sec=end_sec)
 
 save_folder = Path(os.path.join(results_folder_check, "artifact_plots_sqd", "confirmation"))
@@ -429,7 +527,7 @@ if len(remaining_outliers) > 0:
 
 # %%
 #rec_clean = si.zscore(rec_clean)
-rec = rec_clean
+rec = rec_clean  # from here on `rec` is the artifact-removed recording
 
 
 # %%
@@ -450,6 +548,9 @@ print(f"Saved channel std plot to {save_path}")
 plt.close()
 
 # %%
+# Rescale by the global std so amplitude is on a comparable, roughly unit
+# scale across different recordings/sessions, and store as float16 to halve
+# the on-disk footprint of the preprocessed recording vs. float32.
 rec = si.scale(rec, gain=1.0 / gstd, dtype='float16')
 
 # %%
@@ -460,6 +561,10 @@ t_start = rec.get_start_time()
 min_start = int(np.ceil(t_start / 60))
 
 # %%
+# Same visual-QC idea as the raw preview earlier, but now on the fully
+# preprocessed signal: one panel shows highpass-filtered-only for reference,
+# the other shows the final bad-channel-removed + CAR'd + artifact-removed +
+# scaled signal, so the effect of the whole pipeline can be checked by eye.
 save_folder = os.path.join(results_folder_check, "processed_neural_data")
 
 if not os.path.exists(save_folder) or len(os.listdir(save_folder)) == 0:
@@ -507,4 +612,6 @@ rec = rec.astype('float16')
 rec
 
 # %%
+# Final output of the pipeline: this "preprocessed" folder is what downstream
+# spike-sorting jobs (e.g. kilosort4) read as input.
 rec.save_to_folder(os.path.join(results_folder_data, "preprocessed"), overwrite=True, n_jobs=-1)
