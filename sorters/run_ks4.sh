@@ -1,4 +1,13 @@
 #!/bin/bash -l
+# Plain Kilosort4 (no checkpointing) — basically run_ks4_checkpoint.sh
+# without the checkpoint/requeue machinery, so the job dies if it doesn't
+# finish inside this 24h SLURM time limit. Usable for short recordings, but
+# prefer run_ks4_checkpoint.sh unless you have a specific reason not to.
+#
+
+# if running on the preprocessed data, make sure to point to the /preprocessed folder, and set do_CAR = False since it's already done in preporcessing
+# if runnign on the raw data, point to the binary file, and make sure to set do_CAR = True
+
 # Initial working directory:
 #SBATCH -D ./
 # Output directory:
@@ -37,7 +46,7 @@ conda activate phy2
 # Python path should be passed as environment variable when submitting job
 PYTHON=${PYTHON_PATH:-$(which python)}
 
-python /u/gongt/scripts/KS4.py \
+python /u/gongt/scripts/sorters/KS4.py \
     --root_folder /ptmp/gongt/GLC7248/GLC7248_a_g1 \
     --data_folder /ptmp/gongt/GLC7248/GLC7248_a_g1/preprocessed \
     --nblocks 1 \

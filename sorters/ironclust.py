@@ -1,5 +1,14 @@
+# IronClust sorter — an alternative to Kilosort4, run via a container
+# (singularity/apptainer) rather than a local install. Run via run_IC.sh.
+
+# Loads a preprocessed recording, runs IronClust, computes the standard
+# analyzer extensions (waveforms/PCA/templates), and exports to Phy format.
+# Edit root_folder/data_folder below for the session to sort.
+# ironclust.ipynb is the interactive notebook this was developed in — kept
+# for reference, this .py script is the one actually run.
+
 # %%
-import spikeinterface as si 
+import spikeinterface as si
 import spikeinterface.sorters as ss
 from tempfile import TemporaryDirectory
 import numpy as np

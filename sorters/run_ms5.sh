@@ -1,4 +1,9 @@
 #!/bin/bash -l
+# Runs MountainSort5 (ms5.py) — an alternative sorter to Kilosort4, used for
+# comparison. Edit the --root_folder/--data_folder and detection params below
+# for the session to sort, then submit with: sbatch run_ms5.sh
+#
+
 # Initial working directory:
 #SBATCH -D ./
 # Output directory:
@@ -36,7 +41,7 @@ conda activate phy2
 # Python path should be passed as environment variable when submitting job
 PYTHON=${PYTHON_PATH:-$(which python)}
 
-python /u/gongt/scripts/ms5.py \
+python /u/gongt/scripts/sorters/ms5.py \
   --root_folder /nexus/posix0/MBR-neuralsystems/ephys/GLC6811/GLC6811__g2/snippet \
   --data_folder /nexus/posix0/MBR-neuralsystems/ephys/GLC6811/GLC6811__g2/snippet/preprocessed \
   --phase1_detect_channel_radius None \

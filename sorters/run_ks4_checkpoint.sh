@@ -1,6 +1,12 @@
 #!/bin/bash -l
 # Kilosort 4 with checkpointing + SLURM auto-requeue.
 #
+# USE THIS ONE for kilosort4 runs. Absolutely necessary for recordings long enough that
+# sorting won't finish inside one 24h SLURM allocation (the job checkpoints
+# itself and SLURM requeues it automatically instead of the job dying at
+# walltime) — but it works fine for short recordings too, so there's no real
+# reason to prefer plain run_ks4.sh over this.
+#
 # Differences vs run_ks4.sh:
 #   --requeue                : SLURM puts the job back in the queue on signal.
 #   --signal=B:USR1@900      : SLURM sends SIGUSR1 to the batch script 900s
@@ -46,9 +52,11 @@ echo "[sbatch] job $SLURM_JOB_ID restart $SLURM_RESTART_COUNT starting at $(date
 
 conda activate phy2
 
-# Use the patched local Kilosort copy in preference to the pip-installed one.
-# Remove this line to revert to the conda env's kilosort.
-export PYTHONPATH=/u/gongt/scripts/Kilosort-main:$PYTHONPATH
+# (Used to override PYTHONPATH to a local "Kilosort-main" checkout here in
+# preference to the conda env's kilosort. That directory no longer exists and
+# isn't referenced anywhere else — the phy2 env's own kilosort (4.1.1) is
+# already patched in place and satisfies the KS_MIN check in
+# ks4_checkpoint.py, so this was already a silent no-op. Removed.)
 
 PYTHON=${PYTHON_PATH:-$(which python)}
 
@@ -58,7 +66,7 @@ PYTHON=${PYTHON_PATH:-$(which python)}
 # Run python in the background so the shell can react to USR1 immediately.
 # Wait on it; if it exits 0 with a partial-progress sentinel file present,
 # SLURM's --requeue will put the job back in the queue when we exit.
-"$PYTHON" /u/gongt/scripts/ks4_checkpoint.py \
+"$PYTHON" /u/gongt/scripts/sorters/ks4_checkpoint.py \
     --root_folder /ptmp/gongt/GLC6962_l_g1 \
     --data_folder /ptmp/gongt/GLC6962_l_g1/preprocessed \
     --nblocks 10 \

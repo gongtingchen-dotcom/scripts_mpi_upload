@@ -1,6 +1,13 @@
 #!/usr/bin/env python3
 """
-ks4_mua_pipeline.py
+LEGACY / REFERENCE ONLY — not part of the active pipeline.
+
+This was an attempt to replace Kilosort4's own spike detection with our own
+detected spikes (from the peak_detect_localise pipeline / mua_pipeline.py),
+feeding those into KS4 only for clustering. The resulting sorting quality
+was still poor — this approach may not be worth pursuing further. Kept here
+for reference in case someone wants to pick the idea back up.
+
 ===================
 Kilosort 4 clustering with mua_pipeline spike detection replacing
 KS4's built-in template detector.

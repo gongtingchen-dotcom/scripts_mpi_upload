@@ -1,4 +1,11 @@
 #!/bin/bash -l
+# LEGACY / REFERENCE ONLY — see the header of customised_KS4.py. Attempt to
+# feed our own detected spikes (from peak_detect_localise) into KS4 for
+# clustering instead of using KS4's own detector; sorting quality was still
+# poor. Not part of the active pipeline.
+#
+
+
 # Initial working directory:
 #SBATCH -D ./
 # Output directory:
@@ -37,4 +44,4 @@ conda activate phy2
 # Python path should be passed as environment variable when submitting job
 PYTHON=${PYTHON_PATH:-$(which python)}
 
-python /u/gongt/scripts/customised_KS4.py 
+python /u/gongt/scripts/sorters/customised_KS4.py

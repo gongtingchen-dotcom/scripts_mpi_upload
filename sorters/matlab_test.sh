@@ -1,4 +1,11 @@
 #!/bin/bash
+# Not part of the spike-sorting pipeline. One-off diagnostic: submit this to
+# a GPU node to check that MATLAB can see and initialize the GPU
+# (gpuDevice()) in this cluster environment — useful if a MATLAB+GPU job
+# elsewhere is failing and you need to check whether it's an environment
+# problem rather than a problem with that job itself. Submit with:
+# sbatch matlab_test.sh, then check the log for the GPU device info (success)
+# or an error message (environment problem).
 #SBATCH -D ./
 #SBATCH -o ./slurm/%j/logs/training.log
 #SBATCH -e ./slurm/%j/logs/training.log

@@ -1,4 +1,9 @@
 #!/bin/bash -l
+# Runs IronClust (ironclust.py) — an alternative sorter to Kilosort4, used
+# for comparison. Needs a container (apptainer/singularity), set up below.
+# Edit root_folder/data_folder in ironclust.py for the session to sort, then
+# submit with: sbatch run_IC.sh
+
 #SBATCH -D ./
 #SBATCH -o ./slurm/%j/logs/training.log
 #SBATCH -e ./slurm/%j/logs/training.log
@@ -46,4 +51,4 @@ which apptainer || which singularity
 echo "--- Starting IronClust via Container ---"
 nvidia-smi
 
-python /u/gongt/scripts/ironclust.py
+python /u/gongt/scripts/sorters/ironclust.py

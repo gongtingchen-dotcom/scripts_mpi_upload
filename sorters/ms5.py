@@ -1,4 +1,10 @@
 #!/usr/bin/env python
+#
+# MountainSort5 sorter — an alternative to Kilosort4, run via run_ms5.sh, used
+# for comparison. Loads a preprocessed recording, runs mountainsort5, exports
+# to Phy format.
+# ms5.ipynb is the interactive notebook this was developed in — kept for
+# reference, this .py script is the one actually run.
 
 import os
 import argparse
