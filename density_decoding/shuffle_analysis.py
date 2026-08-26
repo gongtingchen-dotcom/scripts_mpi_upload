@@ -1,6 +1,10 @@
 """
-analyse_shuffles.py  —  neural circular shuffle diagnostics
+shuffle_analysis.py  —  neural circular shuffle diagnostics
 ────────────────────────────────────────────────────────────
+Final pipeline step — run after the real run (run_density_decoding_unified.sh)
+and its matching null distribution (run_shuffle_array.sh) have both finished.
+Compares the real run's R²/r against the shuffle-null distribution.
+
 Usage:
     python analyse_shuffles.py \
         --shuffle_dir   <path_to_*_neural_shuffle/>  \

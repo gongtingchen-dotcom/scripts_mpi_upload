@@ -1,4 +1,12 @@
 # %% [markdown]
+# LEGACY — real-run density-decoding script (adds --selected_trials,
+# --demean_beh, --bin_size_ms over density_decoding.py). Superseded by
+# density_decoding_unified.py --shuffle none, which folds this together with
+# the shift/scramble null scripts into one script. run_density_decoding.sh
+# still calls this file — use run_density_decoding_unified.sh instead. Kept
+# for reference only.
+
+# %% [markdown]
 # #### **IMPORTS**
 
 # %%

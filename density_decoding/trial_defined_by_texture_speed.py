@@ -1,6 +1,11 @@
 # %% [markdown]
 # # PC Trial Check — windows defined by texture_speed
 #
+# SUPPLEMENTARY — not part of the main pipeline (produces plots only, no CSV
+# consumed downstream, unlike trial_structure.py). QC check: are texture_speed
+# -defined trial windows also clean/consistent when applied to other PCs, or
+# does each PC need its own peak-aligned window (as trial_structure.py does)?
+#
 # **Pipeline:**
 # 1. Run the full texture_speed peak-align + trim + RMS-filter pipeline
 #    (identical logic to trial_structure.py) to obtain a set of trial windows.

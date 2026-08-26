@@ -1,4 +1,9 @@
 # %% [markdown]
+# LEGACY — circular-shift null distribution script. Superseded by
+# density_decoding_unified.py --shuffle shift (same logic, folded together
+# with the real-run and scramble-null scripts into one). Kept for reference
+# only.
+#
 # #### **DENSITY DECODING — CIRCULAR SHIFT NULL DISTRIBUTION**
 #
 # Circularly shifts either spike times OR behaviour within the session

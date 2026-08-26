@@ -1,4 +1,10 @@
 # %% [markdown]
+# LEGACY — earliest version of the density-decoding real-run pipeline (no
+# --selected_trials/--demean_beh, uses --n_t_bins instead of --bin_size_ms).
+# Superseded by density_decoding_trial_selection.py, itself superseded by
+# density_decoding_unified.py (--shuffle none). Kept for reference only.
+
+# %% [markdown]
 # #### **IMPORTS**
 
 # %%

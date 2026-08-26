@@ -46,6 +46,23 @@
 #     map onto the null loop).
 #
 # SLURM array usage (shift/scramble): submit one --shuffle_index per job.
+#
+# USAGE: run via run_density_decoding_unified.sh (real run, --shuffle none) or
+# run_shuffle_array.sh (SLURM array of --shuffle shift/scramble null runs, one
+# --shuffle_index per array task). --selected_trials points at a CSV from
+# trial_structure.py (run that first). See PARAMS section below (--animal
+# through --seed) for the full CLI.
+#
+# OUTPUTS, in RUN_DIR = <BASE_DIR>/density_decoding/<param-encoded name>[_<mode>_<shuffle>_all]:
+#   decode_params_<VAR>_<SESSION>.json          -- full run config + results (R²/r etc.)
+#   advi_loss_<VAR>_<SESSION>.png                -- ADVI fit convergence
+#   ~15 other QC/diagnostic PNGs (alignment check, spike positions, localisation
+#     scatter, waveform QC, drift scatter, behaviour overview, feed diagnostic,
+#     trial inspection; putative neurons / trial diagnostics / decode traces are
+#     --shuffle none only) -- see the plt.savefig() calls throughout for the
+#     full, self-describing list of filenames.
+#   For shift/scramble: one decode_params_*.json + plot set per --shuffle_index,
+#     meant to be aggregated afterwards by shuffle_analysis.py.
 
 import sys, os, json, pickle, datetime, threading, shutil, glob
 

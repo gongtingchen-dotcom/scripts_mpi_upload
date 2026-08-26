@@ -1,5 +1,25 @@
 # %% [markdown]
 # # Trial Structure Analysis
+#
+# THE first pipeline step — produces the `similar_trials_*.csv` that
+# density_decoding_unified.py's `--selected_trials` consumes. Run this before
+# run_density_decoding_unified.sh / run_shuffle_array.sh.
+#
+# USAGE: no CLI args — edit `PC_COLS` in "USER CONFIGURATION" below (which PCs
+# to process, their rms_threshold/align mode/color), then run top-to-bottom or
+# cell by cell (`# %%` markers).
+#
+# PARAMETERS: see USER CONFIGURATION below — `PC_COLS` per-PC settings,
+# `MIN_DUR`/`MAX_DUR` (duration filter, seconds), `WINDOW_SEC` (fixed window
+# length, = MIN_DUR).
+#
+# OUTPUT CSV NAME does NOT encode rms_threshold — only
+# `similar_trials_<pc>_<align>_dur<MIN_DUR>s.csv`. Running the same PC/align
+# combo again with a different rms_threshold silently overwrites the earlier
+# CSV. Rename the file yourself afterwards if you need to keep multiple
+# threshold sweeps for the same PC around (this is why some existing CSVs on
+# disk have an "_rms<value>" suffix — added by hand, not by this script).
+#
 # **Pipeline (per PC):**
 # 1. Load data
 # 2. Duration histogram → filter trials
@@ -11,6 +31,8 @@
 #       (threshold shown as envelope around mean on the plot)
 #    e. Trial-average ± SD plot
 #    f. Export CSV with original onset/offset AND aligned window start/end
+#       -> {behaviour_folder}/{animal}/{animal}_{exp}/similar_trials_<pc>_<align>_dur<MIN_DUR>s.csv
+#    Plots -> {behaviour_folder}/{animal}/{animal}_{exp}/trial_filter/
 
 # %% ── IMPORTS ────────────────────────────────────────────────────────────────
 import numpy as np

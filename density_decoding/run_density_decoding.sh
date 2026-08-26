@@ -1,4 +1,6 @@
 #!/bin/bash -l
+# LEGACY — runs density_decoding_trial_selection.py, superseded by
+# density_decoding_unified.py. Use run_density_decoding_unified.sh instead.
 # Initial working directory:
 #SBATCH -D ./
 # Output directory:

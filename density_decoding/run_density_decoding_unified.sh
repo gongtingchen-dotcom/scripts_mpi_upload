@@ -1,4 +1,9 @@
 #!/bin/bash -l
+# THE active pipeline (real run) — runs density_decoding_unified.py with
+# --shuffle none. Requires a --selected_trials CSV from trial_structure.py.
+# For the null-distribution runs, see run_shuffle_array.sh; for comparing the
+# two afterwards, see shuffle_analysis.py.
+# Submit with: sbatch run_density_decoding_unified.sh
 # Initial working directory:
 #SBATCH -D ./
 # Output directory:

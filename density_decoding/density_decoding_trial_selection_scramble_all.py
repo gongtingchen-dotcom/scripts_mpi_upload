@@ -1,4 +1,10 @@
 # %% [markdown]
+# LEGACY — bin-scramble null distribution script. Superseded by
+# density_decoding_unified.py --shuffle scramble (same logic, folded together
+# with the real-run and shift-null scripts into one). Its own run_scramble_array.sh
+# wrapper (referenced below) no longer exists — use run_shuffle_array.sh with
+# unified.py's --shuffle scramble instead. Kept for reference only.
+#
 # #### **DENSITY DECODING — BIN SCRAMBLE NULL DISTRIBUTION**
 #
 # Instead of circularly shifting spike times (neural shuffle), this script

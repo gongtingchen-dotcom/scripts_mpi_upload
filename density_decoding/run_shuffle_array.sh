@@ -1,4 +1,10 @@
 #!/bin/bash -l
+# THE active pipeline (null-distribution runs) — SLURM array of
+# density_decoding_unified.py --shuffle shift runs, one --shuffle_index per
+# task, for comparison against the real run (run_density_decoding_unified.sh).
+# --shuffle_mode/--shuffle are hardcoded below (neural/shift) — edit directly
+# for a behavior-mode or scramble-type null. After all tasks finish, run
+# shuffle_analysis.py to compare against the real run's R²/r.
 #SBATCH -D ./
 #SBATCH -o ./slurm/%A_%a/logs/shuffle_%a.log
 #SBATCH -e ./slurm/%A_%a/logs/shuffle_%a.log
@@ -27,7 +33,7 @@ PYTHON=${PYTHON_PATH:-$(which python)}
 
 mkdir -p ./slurm/${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}/logs
 
-echo "=== SHUFFLE ${SLURM_ARRAY_TASK_ID} / $((N_SHUFFLES - 1)) ==="
+echo "=== SHUFFLE ${SLURM_ARRAY_TASK_ID} / 99 ==="  # keep in sync with --array=0-99 above
 
 python /u/gongt/scripts/density_decoding/density_decoding_unified.py \
     --animal GLC6962 \
