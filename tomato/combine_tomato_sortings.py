@@ -3,6 +3,11 @@
 """
 combine_tomato_sortings.py
 ==========================
+LEGACY — early, hardcoded-paths version of merge_tomato_results.py, written
+while that script was still being developed. Superseded by
+merge_tomato_results.py (general N-chunk merge with a CLI, global-sample-index
+recovery, and overlap warnings). Kept for reference only.
+
 Merge two NumpyFolderSorting results that cover consecutive time windows
 into a single NumpyFolderSorting saved as tomato_sorting2_all.
 

@@ -1,6 +1,10 @@
 # %% [markdown]
 # # **Auto-merging**
-# 
+#
+# LEGACY — earliest version of the auto-merging pipeline. Superseded by
+# try_merge_selfdbuild_cleaned.py, which carries the same logic plus two bug
+# fixes (see that file's docstring) and decouples phy-file writes from the
+# expensive metrics computation. Kept for reference only.
 
 # %% [markdown]
 # #### **Imports & Settings**

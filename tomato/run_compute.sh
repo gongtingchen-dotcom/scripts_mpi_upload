@@ -1,4 +1,6 @@
 #!/bin/bash -l
+# LEGACY — runs compute_in_si.py, an early precursor to
+# try_merge_selfdbuild_cleaned.py. Use run_try_merge_selfbuild.sh instead.
 # Initial working directory:
 #SBATCH -D ./
 # Output directory:
@@ -36,5 +38,5 @@ conda activate phy2
 # Python path should be passed as environment variable when submitting job
 PYTHON=${PYTHON_PATH:-$(which python)}
 
-python /u/gongt/scripts/compute_in_si.py 
+python /u/gongt/scripts/tomato/compute_in_si.py
     

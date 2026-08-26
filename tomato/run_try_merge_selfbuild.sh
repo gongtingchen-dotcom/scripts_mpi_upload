@@ -1,4 +1,10 @@
 #!/bin/bash -l
+# THE active auto-merging pipeline — runs try_merge_selfdbuild_cleaned.py
+# (step 1). Edit paths/RUN_* flags directly in that script before submitting.
+# For the optional second merge pass (try_merge_step_2.py), run it manually
+# in the same `slay` environment — no separate .sh wrapper exists for it yet.
+# Submit with: sbatch run_try_merge_selfbuild.sh
+
 # Initial working directory:
 #SBATCH -D ./
 # Output directory:
@@ -32,4 +38,4 @@ conda activate slay
 # Python path should be passed as environment variable when submitting job
 PYTHON=${PYTHON_PATH:-$(which python)}
 
-python /u/gongt/scripts/try_merge_selfdbuild_1.py
+python /u/gongt/scripts/tomato/try_merge_selfdbuild_cleaned.py

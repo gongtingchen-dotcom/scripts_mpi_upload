@@ -1,6 +1,11 @@
 # %% [markdown]
 # # **Auto-merging**
-# 
+#
+# LEGACY — HPC-scale variant of try_merge_selfdbuild.py with parallel/GPU
+# performance options (multi-worker ContamPct/ISI and XCorr loops, GPU
+# cosine-similarity). Those performance options were ported into
+# try_merge_selfdbuild_cleaned.py (PERFORMANCE SETTINGS section, off by
+# default) — use that file instead. Kept for reference only.
 
 # %% [markdown]
 # #### **Imports & Settings**

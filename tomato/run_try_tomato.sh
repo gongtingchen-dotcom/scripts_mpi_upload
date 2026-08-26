@@ -1,4 +1,11 @@
 #!/bin/bash -l
+# THE active pipeline — use this one. Runs try_tomato.py: ToMATo clustering
+# directly on drift-corrected localized peaks (no spike sorting). Edit
+# DATA_PATH/FOLDER_NAME below for the session, and the sample range if
+# splitting a long recording into chunks (see try_tomato.py's header for
+# why/how, and merge_tomato_results.py for stitching chunks back together).
+# Submit with: sbatch run_try_tomato.sh
+#
 # Initial working directory:
 #SBATCH -D ./
 # Output directory:

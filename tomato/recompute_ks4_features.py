@@ -11,6 +11,20 @@ roughly TARGET_N_CHANNELS contacts around the best channel for the median unit.
 Existing KS4 PC files are renamed to pc_features_old.npy and pc_feature_ind_old.npy,
 then replaced with newly computed ones (in-place, no new folder created).
 
+SUPPLEMENTARY — not part of the main ToMATo/self-build pipeline. Use this to
+redo PC features on an EXISTING Kilosort4 output (e.g. after deciding you
+want more channels per unit in the PCA, without re-running sorting itself).
+
+USAGE:
+  python recompute_ks4_features.py [--ks4_dir P] [--rec_path P]
+      [--target_n_channels N] [--n_pcs N] [--ms_before F] [--ms_after F]
+  Args are optional and default to the paths/values hardcoded in the
+  "USER CONFIGURATION" section below.
+
+OUTPUTS, in KS4_OUTPUT_DIR (in place):
+  pc_features.npy, pc_feature_ind.npy       -- newly computed
+  pc_features_old.npy, pc_feature_ind_old.npy -- renamed originals (backup)
+
 =======================================================================
 CONFIGURE EVERYTHING IN THE "USER CONFIGURATION" SECTION BELOW
 =======================================================================

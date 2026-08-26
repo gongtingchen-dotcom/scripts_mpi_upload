@@ -1,11 +1,15 @@
 # %% [markdown]
 # # **Auto-merging**
-# 
+#
+# LEGACY — earlier, smaller iteration of the auto-merging pipeline (missing
+# plot_all_clusters, the phy bootstrap-from-sorting step, and several other
+# stages present in try_merge_selfdbuild_cleaned.py). Superseded by that
+# file. Kept for reference only.
 
 # %% [markdown]
 # #### **Imports & Settings**
 
-###### need to run this in the slay micromamba environment! 
+###### need to run this in the slay micromamba environment!
 
 # %%
 import json

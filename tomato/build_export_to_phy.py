@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-rebuild_export_to_phy.py
-========================
+build_export_to_phy.py
+=======================
 Rebuild the entire export_to_phy folder with consistent sparsity.
 
 This recomputes ALL files that need to match the sparsity setting:
@@ -14,8 +14,33 @@ This recomputes ALL files that need to match the sparsity setting:
 
 This ensures phy sees consistent channel dimensions across all views.
 
-### things to modify: 
-- results are not saved in _sparse_analyzer, only exported to phy 
+Run this first after try_tomato.py (or merge_tomato_results.py, if the
+recording was chunked) to turn its NumpySorting into a phy-openable folder.
+try_merge_selfdbuild_cleaned.py / try_merge_step_2.py then operate on the
+export_to_phy folder this script produces.
+
+USAGE:
+  python build_export_to_phy.py [--sorting_path P] [--rec_path P] [--export_dir P]
+                                 [--target_n_channels N] [--n_pcs N]
+                                 [--ms_before F] [--ms_after F]
+  All args are optional and default to the paths/values hardcoded in the
+  "USER CONFIGURATION" section below — edit those for routine use, or pass
+  flags to override per-run without editing the file.
+
+PARAMETERS: see USER CONFIGURATION section below for the full list
+(TARGET_N_CHANNELS, N_PCS, MS_BEFORE/MS_AFTER, MAX_SPIKES_PER_UNIT,
+MAX_SPIKES_FOR_TEMPLATE, JOB_KWARGS, SKIP_PC_FEATURES), each commented in place.
+
+OUTPUTS, all in EXPORT_TO_PHY_DIR (rebuilt from scratch each run):
+  templates.npy, template_ind.npy          -- per-unit mean waveforms + sparse channel indices
+  pc_features.npy, pc_feature_ind.npy      -- per-spike PCA features (skipped if SKIP_PC_FEATURES)
+  amplitudes.npy                            -- per-spike amplitude at best channel
+  whitening_mat_inv.npy                     -- sparsified inverse whitening matrix
+  spike_times.npy, spike_clusters.npy, spike_templates.npy, cluster_group.tsv
+                                             -- copied/derived from SORTING_PATH
+
+### things to modify:
+- results are not saved in _sparse_analyzer, only exported to phy
 - the 'good' labelling is very crude right now
 - the contamination index is wrong (all zeros for now)
 

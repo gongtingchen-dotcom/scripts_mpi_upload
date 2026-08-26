@@ -1,6 +1,13 @@
+# %% [markdown]
+# LEGACY — early precursor to try_merge_selfdbuild_cleaned.py. Uses
+# SpikeInterface's built-in SortingAnalyzer extensions (quality_metrics,
+# template_similarity, etc.) directly instead of the custom SNR/ContamPct
+# labelling + merge-finding logic that file implements. Superseded by it.
+# Kept for reference only.
+
 # %%
-## IMPORT LIBRARIES 
-import os 
+## IMPORT LIBRARIES
+import os
 import numpy as np
 import spikeinterface.core as si 
 import spikeinterface.widgets as sw

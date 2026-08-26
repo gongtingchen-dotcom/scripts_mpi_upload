@@ -2,11 +2,17 @@
 """
 cluster_from_spikes.py
 ======================
+LEGACY — superseded by try_tomato.py (Tomato-based clustering). Kept for
+reference: clusters peaks with SpikeInterface's own built-in clustering
+methods instead of Tomato.
+
 Full spike-sorting pipeline using SpikeInterface:
   1. Load recording + detected peaks
-  2. Cluster peaks with the chosen method
+  2. Cluster peaks with the chosen method (HDBSCAN / isosplit / graph-clustering / ...)
   3. Create SortingAnalyzer + compute extensions
   4. Export to Phy
+
+Run via run_cluster_from_spikes.sh (also legacy).
 
 =======================================================================
 CONFIGURE EVERYTHING IN THE "USER CONFIGURATION" SECTION BELOW.

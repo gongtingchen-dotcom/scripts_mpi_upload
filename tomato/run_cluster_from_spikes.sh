@@ -1,4 +1,8 @@
 #!/bin/bash -l
+# LEGACY — cluster_from_spikes.py clusters peaks with SpikeInterface's
+# built-in methods (HDBSCAN/isosplit/graph-clustering, not Tomato) and
+# exports straight to phy. Superseded by run_try_tomato.sh (Tomato-based
+# clustering) for the active pipeline.
 # Initial working directory:
 #SBATCH -D ./
 # Output directory:
@@ -37,4 +41,4 @@ conda activate spikeinterface
 # Python path should be passed as environment variable when submitting job
 PYTHON=${PYTHON_PATH:-$(which python)}
 
-python /u/gongt/scripts/cluster_from_spikes.py 
+python /u/gongt/scripts/tomato/cluster_from_spikes.py 

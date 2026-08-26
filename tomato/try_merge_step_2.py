@@ -1,6 +1,14 @@
 """
 try_merge_step_2.py — greedy core-cluster merge search.
 
+USAGE: run after try_merge_selfdbuild_cleaned.py (step 1) has produced a
+labelled PHY_DIR (build_analyzer/label_clusters/build_metrics stages done at
+least once). No CLI args — edit "Paths" and "Run flags" below, then run
+top-to-bottom or cell by cell (`# %%` markers). Optional second merge pass
+that catches good-with-mua/noise merges step 1's find_merges structurally
+can't (see WHY THIS EXISTS below) — skip it if step 1's merges already look
+complete for your data.
+
 Runs independently against ANY phy-openable output directory — set PHY_DIR /
 RECORDING_PATH / PEAKS_FILE / ANALYZER_DIR below to point at whatever run you
 want (not necessarily one produced by try_merge_selfdbuild_cleaned.py in this

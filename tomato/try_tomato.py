@@ -1,10 +1,60 @@
+"""
+THE active clustering pipeline — use this. Run via run_try_tomato.sh.
+
+WHAT IT DOES: clusters detected peaks directly (no Kilosort-style template
+matching) using ToMATo (Topological Mode Analysis TOol, gudhi.clustering.tomato
+— a persistence-based clustering method: finds density peaks/modes in feature
+space and merges basins whose persistence is below a threshold, reading that
+threshold off a persistence diagram rather than picking a cluster count by
+hand).
+  1. Drift-correct each peak: shift its position by the motion estimate at
+     its own (depth, time), then snap to the nearest channel (same approach
+     as theo_decoding/theo_decode_cv.py — see DRIFT CORRECTION HELPERS below).
+  2. Split the recording into time windows; extract waveform features and run
+     Tomato separately per window (keeps memory bounded on long recordings).
+  3. For each window, Tomato's persistence diagram gives an automatic cluster
+     count; save persistence_win*.png so you can sanity-check or override it
+     by hand (the manual-override code path is commented out by default —
+     see "n_clusters choosing / re-fitting step" — enable it if a window's
+     automatic count looks wrong).
+  4. Relabel clusters to global, contiguous IDs (offset per window) and save
+     as a NumpySorting.
+
+USAGE: sbatch run_try_tomato.sh (edit DATA_PATH/FOLDER_NAME in that script for
+the session), or directly:
+  python try_tomato.py --data_path <preprocessed folder> [--sample_start N --sample_end N]
+
+PARAMETERS:
+  --data_path              preprocessed recording folder (si.load()-able).
+  --motion_path             motion estimate folder; defaults to
+                            <folder_name>/motion_estimates/motion_dredge under data_path.
+  --localized_peaks_path    localized_peaks_mt_raw.npy; defaults similarly.
+  --skip_drift_correction   use each peak's originally-detected channel as-is,
+                            skip motion correction entirely.
+  --sample_start/--sample_end   restrict to a sample range (for windowed/
+                            chunked runs on long recordings — see
+                            merge_tomato_results.py to stitch the pieces back
+                            together afterward).
+
+OUTPUTS, in <data_path>/<folder_name>/tomato_windowed2<suffix>/:
+  persistence_win*.png       — persistence diagram per window; review these to
+                            judge whether the automatic cluster count is sane.
+  feats_*.npy / tomato_*.npz — extracted features / raw Tomato result per window.
+  final_labels_*.npy         — final per-window cluster labels.
+  <sorting folder>/spike_times.npy, spike_clusters.npy, unit_ids.txt, properties.json
+                              — the actual sorting result, as a NumpySorting.
+  run_summary.json / params.json — cluster/spike counts and exact parameters used.
+NEXT STEP: if run in multiple sample-range chunks, merge_tomato_results.py
+first; then try_merge_selfdbuild_cleaned.py for auto-merging.
+"""
+
 # %% [markdown]
 # **IMPORTS**
 
 # %%
-import numpy as np 
-import matplotlib.pylab as plt 
-import os        
+import numpy as np
+import matplotlib.pylab as plt
+import os
 import spikeinterface.full as si
 from gudhi.clustering.tomato import Tomato
 from spikeinterface.core import get_noise_levels

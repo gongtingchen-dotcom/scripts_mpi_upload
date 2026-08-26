@@ -2,11 +2,17 @@
 """
 merge_tomato_results.py
 =======================
-Merge partial Tomato clustering results produced by separate try_tomato.py
-runs (each covering a different sample range of the recording).
+Second pipeline step — only needed if try_tomato.py was run in separate
+sample-range chunks (long recording split up) rather than once on the whole
+recording. Merges those partial NumpySorting results into one.
 
-Usage
------
+WHAT IT DOES: recovers each chunk's peaks in GLOBAL sample-index terms (each
+chunk's saved `valid_peak_idx` is local to that chunk's own filtered peaks
+array), offsets cluster IDs per chunk so they never collide, concatenates
+into one NumpySorting, and warns if two chunks' sample ranges overlap
+(duplicate spike coverage).
+
+USAGE:
 python merge_tomato_results.py \\
     /ptmp/gongt/GLC7189/GLC7189_g_g1/preprocessed/thresholding_peaks/tomato_windowed_s0_e540000000 \\
     /ptmp/gongt/GLC7189/GLC7189_g_g1/preprocessed/thresholding_peaks/tomato_windowed_s540000000_eEND \\
@@ -15,17 +21,23 @@ python merge_tomato_results.py \\
     [--recording /ptmp/gongt/.../preprocessed]
     [--n-clusters-override 'win0=3,win1=2']   # optional per-window cluster count
 
-Key design choices
-------------------
-* The `valid_peak_idx` stored in each per-window NPZ is an index into the
-  **run-local** filtered peaks array (peaks[sample_start..sample_end]).
-  We recover the **global** sample times by: peaks_local = peaks_full[run_mask],
-  then global_sample = peaks_local['sample_index'][valid_peak_idx].
-* Global cluster IDs are allocated with a per-run offset so they never collide.
-* The merged NumpySorting uses the original sample_index values, so it is
-  fully compatible with try_merge_selfdbuild.py and build_export_to_phy.py.
-* Duplicate spike coverage (if two runs overlap in sample range) is detected
-  and a warning is raised.
+PARAMETERS:
+  run_folders (positional, 2+)   the chunk output folders to merge, named
+                        like tomato_windowed_s<start>_e<end|END>.
+  --output              merged output folder; defaults to a sibling
+                        tomato_sorting_merged/ next to the chunk folders.
+  --peaks/--recording    override the peaks file / recording used to recover
+                        global sample indices (auto-detected by default).
+  --n-clusters-override  force a specific cluster count for named windows
+                        instead of Tomato's automatic persistence-based count.
+
+OUTPUTS, in --output (a NumpySorting, saved via sorting.save()):
+  spike_times.npy / spike_clusters.npy   — also written directly for quick access.
+  (the sorting.save() folder itself)     — everything needed to reload via
+                        si.load(), fully compatible with
+                        try_merge_selfdbuild_cleaned.py / build_export_to_phy.py.
+
+NEXT STEP: try_merge_selfdbuild_cleaned.py for auto-merging.
 """
 
 import argparse

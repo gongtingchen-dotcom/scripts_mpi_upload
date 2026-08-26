@@ -7,6 +7,18 @@ C:\\Users\\gongt\\SLAy). The rewritten PyPI `slay` package does NOT have the
 functions this script needs (x_correlogram, calc_xcorr_sig, slay.plot,
 slay.stages.accept_all_merges).
 
+USAGE: no CLI args — edit the "Paths" and "RUN FLAGS" sections below directly,
+then run top-to-bottom (e.g. `python try_merge_selfdbuild_cleaned.py`, or cell
+by cell — the `# %%` markers make it a Jupyter-convertible script). Input is a
+self-built sorting's phy export (SORTING_DIR/PHY_DIR from try_tomato.py +
+build_export_to_phy.py, or merge_tomato_results.py if run in chunks).
+
+PARAMETERS: RUN_* flags (which stages to (re)compute vs. load from cache) and
+SELF_BUILD_PARAMS (merge thresholds, waveform-extraction window, labelling
+cutoffs) are set and commented in place below — see "RUN FLAGS" and
+"Self-build parameters" sections. PERFORMANCE SETTINGS (USE_GPU_SIMILARITY,
+N_LABEL_WORKERS, N_METRICS_WORKERS) only affect wall-clock time, not results.
+
 STAGES (each gated by a RUN_* flag below):
   1. build_analyzer     - sparse SortingAnalyzer (sparsity mask only, from peaks file)
   2. label_clusters     - SNR / ContamPct / ISI -> cluster_group.tsv (good/mua/noise)
@@ -54,6 +66,20 @@ available). All ported from the HPC-scale try_merge_selfdbuild_1.py; default
 to off/0 (serial CPU), so behavior matches this file's previous version
 unless explicitly opted into. Same output either way -- these only affect
 wall-clock time.
+
+OUTPUTS, all under PHY_DIR (phy-openable at any point) / OUT_DIR = PHY_DIR/RUN_TAG:
+  cluster_group.tsv, cluster_ContamPct.tsv   -- per-cluster label + metrics (label_clusters)
+  ANALYZER_DIR/                              -- sparse SortingAnalyzer (build_analyzer)
+  mean_waveforms.npy, similarity matrices, similar_templates.npy,
+    templates.npy/template_ind.npy (phy)     -- build_metrics
+  OUT_DIR/old2new.json, new2old.json         -- merge groups (find_merges)
+  OUT_DIR/merges/*.png (+ rejected/)         -- QC figures (plot_merges)
+  ANALYZER_DIR/cluster_plots/*.png           -- per-cluster QC figures (plot_all_clusters, optional)
+  spike_times.npy / spike_clusters.npy / spike_templates.npy (PHY_DIR, DESTRUCTIVE
+    overwrite, original backed up with "_orig" suffix) -- accept_merges
+
+NEXT STEP: open PHY_DIR in phy to inspect; or run again with RUN_ACCEPT_MERGES
+after reviewing OUT_DIR/merges/ figures.
 """
 
 # %% [markdown]
