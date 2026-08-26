@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 #
-# Plain Kilosort4 driver — same CLI and run-folder naming as
-# ks4_checkpoint.py, just without the checkpoint/SLURM-requeue machinery.
+# Plain Kilosort4 driver — same CLI, same parameters, same output-folder
+# layout as ks4_checkpoint.py (see that script's header for usage examples,
+# parameter tuning guidance, and what gets written where — all of it applies
+# here unchanged), just without the checkpoint/SLURM-requeue machinery.
 # Usable, but the job will simply die if it doesn't finish inside one 24h
 # SLURM allocation. Prefer ks4_checkpoint.py (run_ks4_checkpoint.sh) instead
 # unless you have a specific reason not to — it does everything this does,

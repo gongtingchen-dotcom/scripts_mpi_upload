@@ -8,9 +8,13 @@
 # Usage: edit --animal_tag / --exp_tag below for the session you want to process,
 # then submit with: sbatch run_preprocess.sh
 # (--exp_tag accepts multiple tags, e.g. "a_g0 a_g1", to concatenate several
-# recordings from the same session before preprocessing — see the script.)
-# 
-# Change slurm setup based on data size
+# recordings from the same session before preprocessing — see the script's
+# header for the full parameter list with examples.)
+#
+# Resource sizing: --mem/--time/--gres below were sized for a ~45min session;
+# a much longer recording needs more of all three (the artifact-detection and
+# confirmation sweeps scan the whole recording twice) — check the log from a
+# first run and scale up if it's using most of the allocated memory/time.
 
 
 

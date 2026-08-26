@@ -3,9 +3,30 @@
 
 # Loads a preprocessed recording, runs IronClust, computes the standard
 # analyzer extensions (waveforms/PCA/templates), and exports to Phy format.
-# Edit root_folder/data_folder below for the session to sort.
 # ironclust.ipynb is the interactive notebook this was developed in — kept
 # for reference, this .py script is the one actually run.
+#
+# USAGE: no CLI — edit the config below directly, then `sbatch run_IC.sh`
+# (or `python ironclust.py` on a GPU node with the container set up).
+#
+# PARAMETERS to change per session:
+#   root_folder / data_folder   session dir and its preprocessed/ folder to sort.
+#   exp_folder                  output folder name (default: root_folder/IC_test)
+# IronClust's own sorter-specific parameters (detection threshold, template
+# settings, etc.) are left at default here — run
+# ss.get_sorter_params_description("ironclust") (already called below) to see
+# the full list; pass overrides as extra keyword args to ss.run_sorter(...) if
+# you need to tune them.
+#
+# OUTPUTS, under exp_folder (default root_folder/IC_test/):
+#   sorter_output/         — IronClust's own raw output.
+#   si_analyzer/            — SpikeInterface SortingAnalyzer (waveforms, PCA,
+#                       templates) computed from the sort — cached, so
+#                       reruns only compute whatever extensions are missing.
+#   export_to_phy/          — Phy-format export for manual curation. NOTE:
+#                       the export_to_phy function used here may have been
+#                       deprecated in newer SpikeInterface — check before
+#                       relying on this step if it errors.
 
 # %%
 import spikeinterface as si

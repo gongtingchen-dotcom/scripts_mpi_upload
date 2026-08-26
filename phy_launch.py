@@ -1,4 +1,5 @@
-### this is to launch phy on Mac M1 with OpenGL 2.1 and QtWebEngine
+### this is to launch phy on Mac M1 with OpenGL 2.1 and QtWebEngine; 
+### if using Mac, instead of running from the command line, run this script 
 
 import os
 from pathlib import Path

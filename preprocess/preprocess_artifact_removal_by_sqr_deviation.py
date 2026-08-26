@@ -2,8 +2,30 @@
 #
 # ============================================================================
 # THE preprocessing pipeline for SpikeGLX Neuropixels recordings.
-# Run via `run_preprocess.sh` (sbatch), or directly as:
+#
+# USAGE:
+#   sbatch run_preprocess.sh          (recommended — see that script, run on raven)
+#   # or directly:
 #   python preprocess_artifact_removal_by_sqr_deviation.py --animal_tag <tag> --exp_tag <tag> [<tag> ...]
+#
+# EXAMPLES:
+#   # single recording
+#   python preprocess_artifact_removal_by_sqr_deviation.py --animal_tag GLC7248 --exp_tag a_g1
+#   # a session split into two SpikeGLX recordings, concatenated first
+#   python preprocess_artifact_removal_by_sqr_deviation.py --animal_tag GLC7189 --exp_tag g_g0 g_g1
+#   # only preprocess a sub-window (e.g. to test quickly before a full run)
+#   python preprocess_artifact_removal_by_sqr_deviation.py --animal_tag GLC7248 --exp_tag a_g1 --start_sec 0 --end_sec 600
+#
+# PARAMETERS:
+#   --animal_tag       required. Subject ID, matches the folder name under
+#                       /nexus/posix0/MBR-neuralsystems/ephys/<animal_tag>/
+#   --exp_tag           required, one or more. Session tag(s), e.g. "a_g1". Pass
+#                       multiple space-separated tags to concatenate several
+#                       recordings from one session before preprocessing (a
+#                       session that was paused/restarted).
+#   --start_sec/--end_sec   optional. Restrict preprocessing to a sub-window
+#                       of the recording (seconds). Leave unset for the whole
+#                       recording; only really useful for a quick test run.
 #
 # WHAT IT DOES, end to end, for one recording:
 #   1. Loads the raw recording (or concatenates several, if multiple --exp_tag
@@ -13,12 +35,23 @@
 #   3. Highpass-filters, then detects and removes bad channels and applies common median
 #      referencing.
 #   4. Extracts TTL pulse times from the sync/behaviour channel.
-#   5. Detects and zeroes out "eInk" artifacts 
+#   5. Detects and zeroes out "eInk" artifacts
 #   6. Re-scans the cleaned recording as a sanity check that no large
 #      artifacts remain.
 #   7. Rescales the recording to a common per-recording amplitude scale and
 #      saves it as float16 to a "preprocessed" folder — this is the file
 #      that downstream spike-sorting jobs (e.g. kilosort4) consume.
+#
+# OUTPUTS, all written to /nexus/posix0/MBR-neuralsystems/ephys/<animal_tag>/<animal_tag>_<exp_tag(s)>/
+# (see README.md's Preprocess section for the full list) — the two that
+# matter most downstream:
+#   preprocessed/              — the cleaned, rescaled recording (float16,
+#                       SpikeInterface binary format). This is the actual
+#                       deliverable of this script; every later stage
+#                       (sorting, peak detection) reads from here.
+#   outliers_list_sqr_overview.txt   — detected eInk-artifact sample times,
+#                       used by process_eInk.ipynb and by scripts that need
+#                       to know exactly when artifacts occurred.
 #
 # ============================================================================
 

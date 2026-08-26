@@ -23,6 +23,35 @@ Drop-in replacement for KS4.py. Same CLI. Differences:
 
 Resume invariant: rerunning the exact same command on an existing output
 folder picks up where the previous run stopped.
+
+USAGE / EXAMPLE (via run_ks4_checkpoint.sh, or directly):
+  python ks4_checkpoint.py \
+      --root_folder /nexus/posix0/MBR-neuralsystems/ephys/GLC7189/GLC7189_g_g1 \
+      --data_folder /nexus/posix0/MBR-neuralsystems/ephys/GLC7189/GLC7189_g_g1/preprocessed \
+      --nblocks 1 --Th_universal 9 --Th_learned 8
+
+PARAMETERS: every kilosort4 parameter from si.get_default_sorter_params
+('kilosort4') is exposed as a CLI flag automatically (see the argparse loop
+below) — pass any of them the same way. Plus:
+  --root_folder / --data_folder   required. Session dir and its preprocessed/
+                        folder (the recording this sort runs on).
+  --time_start / --time_end        optional, seconds. Restrict sorting to a
+                        sub-window of the recording.
+
+What differs from kilosort4's own defaults gets encoded into the output
+run-folder name (see build_run_name below), so it's safe to pass many flags.
+
+OUTPUTS, all under <root_folder>/KS4/<run_name>/ (run_name auto-built from
+whichever params you changed from default, e.g. "nb1_thu9_thl8"):
+  sorter_output/            — the actual sort result, Phy-compatible:
+                        spike_times.npy, spike_clusters.npy, templates.npy,
+                        amplitudes.npy, channel_map.npy, cluster_*.tsv, plus
+                        ops.npy (full run state — also what
+                        kilosort_diagnostic_plots-style notebooks read).
+  sorter_output/_checkpoints/   — this script's own checkpoint state (safe to
+                        delete once a run has finished successfully).
+  kilosort_params.txt        — every parameter this run actually used, for
+                        reproducibility.
 """
 
 import argparse

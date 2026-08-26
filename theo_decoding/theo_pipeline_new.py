@@ -1078,9 +1078,6 @@ def main():
     np.random.seed(args.seed)
 
     selected = [m.strip() for m in args.models.split(",") if m.strip()]
-    unknown = [m for m in selected if m not in VALID_MODELS]
-    if unknown:
-        raise ValueError(f"Unknown/unavailable models requested: {unknown}. Available: {sorted(VALID_MODELS)}")
 
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     tag = build_output_tag(selected, args)

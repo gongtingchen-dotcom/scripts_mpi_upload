@@ -5,6 +5,40 @@
 # to Phy format.
 # ms5.ipynb is the interactive notebook this was developed in — kept for
 # reference, this .py script is the one actually run.
+#
+# USAGE / EXAMPLE (via run_ms5.sh, or directly):
+#   python ms5.py \
+#       --root_folder /nexus/posix0/MBR-neuralsystems/ephys/GLC6811/GLC6811__g2/snippet \
+#       --data_folder /nexus/posix0/MBR-neuralsystems/ephys/GLC6811/GLC6811__g2/snippet/preprocessed \
+#       --detect_threshold 4.5 --phase1_detect_threshold 4.5
+#
+# PARAMETERS — MountainSort5 runs detection/classification in two phases
+# (phase1: a fast rough pass used to learn templates; phase2/final: the
+# actual detection+classification using those templates), so most params come
+# in phase1_* / plain pairs:
+#   --*detect_channel_radius       spatial radius (µm) for grouping channels during detection.
+#   --*detect_threshold             detection amplitude threshold, units of noise.
+#   --detect_sign                   which deflection counts as a spike: -1 (negative-going, default), 1, or 0 (both).
+#   --*detect_time_radius_msec      temporal exclusion window (ms) to avoid double-counting the same spike.
+#   --phase1_npca_per_channel / --phase1_npca_per_subdivision   PCA feature counts used for phase-1 clustering.
+#   --classifier_npca               PCA components for the final classifier (None = library default).
+#   --snippet_T1 / --snippet_T2     samples kept before/after each event for classification.
+#   --snippet_mask_radius           spatial mask radius (µm) applied to extracted snippets.
+#   --max_num_snippets_per_training_batch   training batch size cap.
+#   --training_duration_sec          how much of the recording to use for training the classifier (None = whole recording).
+#   --training_recording_sampling_mode   how training snippets are sampled across the recording (e.g. "initial", "uniform").
+#   --classification_chunk_sec       chunk size (s) for the final classification pass.
+#   --phase1_pairwise_merge_step     flag; if set, runs an extra pairwise-merge step after phase-1 clustering.
+# Only params that differ from MountainSort5's own defaults get encoded into
+# the output folder name (see build_run_name).
+#
+# OUTPUTS, under <root_folder>/ms5_<run_name>/:
+#   sorting_analyzer/    — SpikeInterface SortingAnalyzer: waveforms, templates,
+#                 spike amplitudes/locations, template similarity, and quality
+#                 metrics (snr, isi_violation, presence_ratio, amplitude_cutoff).
+#   phy/                 — Phy-format export for manual curation.
+#   params.yaml           — every parameter this run actually used.
+#   ms5.log / slurm.log   — run log and (if run under SLURM) a copy of the job log.
 
 import os
 import argparse
