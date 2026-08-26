@@ -1,9 +1,24 @@
 #!/usr/bin/env python3
 """Apply a sample-index offset to peak arrays.
 
-This is a manual repair utility for peak files that were produced from a
-sliced recording but still need to be expressed relative to the original
-recording timeline.
+Standalone manual repair utility — run by hand, not part of any .sh pipeline.
+Rewrites every peak_*.npy file's 'sample_index' field in place, adding a
+fixed offset (in frames, or seconds converted via --sampling-frequency).
+
+Written for one specific problem: peak files that were produced from a
+SLICED recording (e.g. --time_start_s set) but never got shifted back to be
+relative to the ORIGINAL, unsliced recording — so their sample_index values
+don't line up with anything computed from the full recording.
+
+CONFIRMED (checked directly in peak_localisation.py): this shift now happens
+automatically for any peaks produced by running peak_localisation.py itself
+— shift_peaks_to_original_time() is called right after detection, and
+peaks reloaded from a previous run are explicitly assumed to already be
+shifted (see the comment on that code path). So this script shouldn't be
+needed for peaks_*.npy files that came out of peak_localisation.py. It's
+only useful for an old peaks file predating that fix, or peaks produced some
+other way (e.g. calling mua_pipeline.run_mua_pipeline() directly, outside
+peak_localisation.py) that hit the same kind of offset problem.
 
 Examples:
     python fix_peak_sample_indices.py \

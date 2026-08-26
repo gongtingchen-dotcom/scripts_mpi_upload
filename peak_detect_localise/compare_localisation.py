@@ -1,13 +1,29 @@
 """
+This is the comparison that settled the choice of localization method: the
+IBL/Boussard denoiser+localizer pipeline (boussard_localization.py) wasn't
+meaningfully better than SpikeInterface's monopolar_triangulation (used in
+peak_localisation.py, the active pipeline) for the extra GPU time it costs —
+see peak_localisation.py's header for the reasoning this led to.
+
 Compare Boussard vs SpikeInterface monopolar-triangulation localisations.
 
 Requires a GPU node (Boussard denoiser uses CUDA).
+Need to point the paths to the right ones. 
 Run with:
     conda activate spikeinterface
     python scripts/compare_localisation.py
 
-All plots saved to:
-    /ptmp/gongt/GLC7189/GLC7189_g_g1/preprocessed/thresholding_peaks_3.3/
+OUTPUTS — all plots (no data files), saved into peaks_folder:
+  boussard_vs_si_comparison_ptp_peaks.png   — depth/lateral position and raw
+                          peak-to-peak amplitude, Boussard vs monopolar
+                          triangulation, side by side
+  amplitude_comparison_ptp_ptp.png          — amplitude distributions compared
+                          directly between the two methods
+  waveforms_boussard_si_outliers.png        — raw vs denoised waveforms for
+                          spikes where the two methods disagree most
+  waveforms_boussard_si_similar.png         — same, for spikes near the
+                          population-median agreement between methods (for
+                          contrast against the outliers above)
 """
 
 import sys, os, json
@@ -19,6 +35,7 @@ from matplotlib.lines import Line2D
 import spikeinterface.full as si
 import torch
 
+# Cloned from https://github.com/int-brain-lab/spikes_localization_registration
 sys.path.insert(0, '/u/gongt/spikes_localization_registration')
 from localization_pipeline.localizer import LOCALIZER
 

@@ -1,5 +1,36 @@
 #!/usr/bin/env python3
 """
+Comparison method, not the default — see peak_localisation.py for the active
+pipeline (monopolar triangulation via spikeinterface, which is a simpler version 
+of boussard_localization). This script runs the full IBL localization
+pipeline instead: a neural-network denoiser on each waveform, then
+localization from the denoised waveform. Needs a GPU and is much slower than
+monopolar triangulation. This was the localization method that Yizi Zhang's 
+density decoding paper uses, and is directly compared against monopolar triangulation in
+compare_localisation.py — the denoiser version wasn't meaningfully better for
+the extra cost, so monopolar triangulation is what the active pipeline uses.
+Kept here as the standing comparison / for cases where the denoiser step
+might matter more (e.g. noisier data).
+
+No CLI args — edit the hardcoded paths/config below (REC_DIR, PEAKS_DIR, the
+RUN_* flags) for the session to process, then submit via
+run_boussard_localisation.sh.
+
+OUTPUTS:
+  PEAKS_DIR/boussard_localization_all/            — raw per-batch localization
+                          results (times_read_*.npy etc., one set per 1s batch)
+  PEAKS_DIR/boussard_localization_all_merged/      — merged across all batches
+    results_x_merged.npy, results_y_merged.npy, results_z_merged.npy   — each
+                          peak's (x, y, z) location in µm (z = depth along probe)
+    results_alpha_merged.npy, results_max_ptp_merged.npy   — two alternative
+                          amplitude estimates per peak
+    times_read.npy       — 1 if that peak's localization passed the denoiser
+                          quality threshold, 0 otherwise (used to exclude
+                          unreliable localizations downstream)
+  PEAKS_DIR/boussard_plots_all/   — QC plots: trough-alignment check,
+                          raw-vs-denoised waveforms, drift scatter, feature
+                          distributions — visual sanity checks only.
+
 Boussard spike localization pipeline — GLC7189_g_g1  (FULL RECORDING)
 Adapted from: https://github.com/int-brain-lab/spikes_localization_registration
 
@@ -12,6 +43,7 @@ Steps:
   6. Save localization quality plots
 
 Usage:
+  conda activate spikeinterface
   python run_boussard_localization.py
 """
 

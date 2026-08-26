@@ -1012,7 +1012,7 @@ def run_mua_pipeline(
     # ── 6. Prototype & matched-filter detection ──────────────────────────────
     prototype, waveforms, few_peaks = get_prototype_and_waveforms_from_peaks(
         rec,
-        peaks1,
+        peaks2,
         ms_before=proto_ms_before,
         ms_after=proto_ms_after,
         job_kwargs=dict(n_jobs=proto_n_jobs, chunk_duration=proto_chunk_duration, progress_bar=True)

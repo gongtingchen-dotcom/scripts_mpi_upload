@@ -1,4 +1,11 @@
 #!/bin/bash -l
+# Comparison method, not the default — see run_peak_localisation.sh for the
+# active pipeline. Runs boussard_localization.py (the full IBL
+# denoiser+localizer pipeline, GPU-only, slow) for comparison against the
+# monopolar-triangulation localization the active pipeline uses. Edit the
+# hardcoded paths in boussard_localization.py for the session to process,
+# then submit with: sbatch run_boussard_localisation.sh
+#
 # Initial working directory:
 #SBATCH -D ./
 # Output directory:
@@ -38,17 +45,17 @@ conda activate spikeinterface
 # Python path should be passed as environment variable when submitting job
 PYTHON=${PYTHON_PATH:-$(which python)}
 
-# Auto-resubmit when approaching the time limit:
+# Auto-resubmit when approaching the time limit: (especially since this takes a long time)
 # SLURM sends SIGUSR1 120 s before the wall-clock limit (see --signal above).
 # We trap it: resubmit the same script, then kill Python cleanly and exit.
 trap '
     echo "[$(date)] SIGUSR1: time limit in ~2 min — resubmitting job and exiting."
-    sbatch /u/gongt/scripts/run_boussard_localisation.sh
+    sbatch /u/gongt/scripts/peak_detect_localise/run_boussard_localisation.sh
     kill "$PYTHON_PID" 2>/dev/null
     wait "$PYTHON_PID" 2>/dev/null
     exit 0
 ' USR1
 
-python /u/gongt/scripts/boussard_localization.py &
+python /u/gongt/scripts/peak_detect_localise/boussard_localization.py &
 PYTHON_PID=$!
 wait "$PYTHON_PID"

@@ -1,9 +1,12 @@
 """
 spike_density.py
 ================
+QC/analysis utility, not part of the .sh pipeline — run by hand after
+motion correction. 
+
 Spike density along the probe vector.
 
-Loads peaks_combined2_sorted.npy and (optionally) localized_peaks_mt_raw.npy
+Loads peaks_combined2_sorted.npy and localized_peaks_mt_raw.npy
 (outputs of peak_localisation.py) together with an optional SpikeInterface
 motion object, then produces up to four plot groups:
 
@@ -19,12 +22,18 @@ motion object, then produces up to four plot groups:
   2.  Raw scatter + motion overlay  — 3 user-chosen windows
   3.  Motion-corrected scatter  — same 3 windows
   4.  Channel density / RMS / sorted-unit-rate grid map (2 columns x
-      exact-depth rows) + a slim per-depth spike-rate strip. Deleted
-      channels (missing from the recording, cross-checked against
-      probe.json) are only marked black/red in the noise-RMS panel, since
-      that's the only quantity directly tied to a channel's own signal.
-      Density and sorted-unit snapping are free to land on any nearest
-      channel regardless of deletion status.
+      exact-depth rows) + a slim per-depth spike-rate strip. Panels: spike
+      density (rate or count, from the raw detected peaks snapped to their
+      nearest channel), per-channel noise RMS, and — if a clusters.npz file
+      from a completed sort is found — sorted-unit firing rate snapped onto
+      the same grid. Deleted channels (deleted in preprocessing) are marked 
+      black/red. 
+      The grid itself is built from each channel's real (x, y) position in
+      µm (not channel-index arithmetic), so multiple shanks fall out
+      automatically from real x-gaps; a deleted channel's position (which
+      isn't in the recording's channel list anymore) is reconstructed by
+      interpolating the local staggering pattern of its surviving
+      neighbors, so it still draws in the right spot on the map.
 
 If MOTION_DIR is None, no motion loading or correction is performed; all
 motion-related sections treat displacement as zero (i.e. corrected = raw).

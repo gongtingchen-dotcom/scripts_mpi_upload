@@ -1,30 +1,47 @@
 """
 rolling_snr.py
 --------------
-Compute a rolling (sliding-window) SNR across a recording.
+LEGACY — not part of the active pipeline, kept for reference only.
 
-For each window:
+The idea: mua_pipeline's detection threshold is fixed for the whole
+recording, so we tried making it SNR-adaptive instead — vary the threshold
+along the recording based on rolling SNR, rather than one constant value.
+This script computes that rolling SNR (a diagnostic measurement — it does
+NOT itself re-threshold anything or produce new peaks); the idea was to use
+it to drive an adaptive threshold, but that was never built, because we
+decided against pursuing this: results weren't meaningfully better than the
+standard fixed-threshold approach, and detected peaks using this method were
+still pretty noisy unless the threshold was raised very high — at which
+point it missed so many peaks that it wasn't much different from just using
+standard fixed thresholding. So what this script actually produces is just a
+diagnostic time-series (SNR over time) that was never wired into anything
+downstream.
+
+WHAT IT COMPUTES: run with `python rolling_snr.py` (no CLI — edit BASE_PATH /
+FOLDER_NAME / PEAKS_NAME at the top for the session + existing peaks file to
+analyze). For each sliding time window across the recording:
   1. Load raw traces and estimate per-channel noise via MAD.
-  2. Find detected peaks whose sample_index falls in the window.
+  2. Find already-detected peaks (from an existing peaks*.npy file, e.g.
+     produced by mua_pipeline/peak_localisation.py) whose sample_index falls
+     in the window.
   3. SNR per spike  = |amplitude| / noise_level[channel_index]
   4. Window summary = mean & median SNR, spike count.
 
-Output (.npz):
-  window_centers_s   : (n_windows,)  centre time of each window (seconds)
-  window_starts_s    : (n_windows,)  window start times (seconds)
-  mean_snr           : (n_windows,)  mean   SNR of all spikes in window
-  median_snr         : (n_windows,)  median SNR of all spikes in window
-  spike_counts       : (n_windows,)  number of spikes in window
-  mean_snr_per_chan   : (n_windows, n_channels)  per-channel mean SNR (NaN if no spike)
-  params             : dict stored as a 0-d object array
+WHERE IT'S SAVED — everything below BASE_PATH/FOLDER_NAME (= OUTPUT_DIR),
+except the noise file which is shared across different peaks/threshold runs
+on the same recording:
+  BASE_PATH/rolling_snr/rolling_noise_levels.npz        — chunk-level noise, reused across runs on this recording (SHARED_NOISE_DIR)
+  OUTPUT_DIR/rolling_snr_{peaks_name}.npz                — the actual SNR time series: window_centers_s, window_starts_s, mean_snr, median_snr, spike_counts (all shape (n_windows,)), plus mean_snr_per_chan (n_windows, n_channels) if save_per_channel=True
+  OUTPUT_DIR/rolling_noise_per_window_{peaks_name}.npz   — per-window noise levels
+  OUTPUT_DIR/params_{peaks_name}.json                    — run parameters + summary stats (overall mean/median/min/max SNR etc.)
+  OUTPUT_DIR/rolling_snr_over_time_{peaks_name}.png       — plot, made automatically by analyze_rolling_snr() at the end of the run
+  OUTPUT_DIR/rolling_snr_summary_{peaks_name}.txt         — text summary, same
 
-Save/load layout:
-  SHARED_NOISE_DIR/rolling_noise_levels.npz  — chunk-level noise, reused across runs
-  BASE_PATH/FOLDER_NAME/rolling_snr.npz      — SNR results (threshold-specific)
-  BASE_PATH/FOLDER_NAME/rolling_noise_per_window.npz  — per-window noise (threshold-specific)
-  BASE_PATH/FOLDER_NAME/params.json          — run parameters
-  BASE_PATH/FOLDER_NAME/rolling_snr_over_time.png     — plots
-  BASE_PATH/FOLDER_NAME/rolling_snr_summary.txt       — text summary
+HOW IT WAS MEANT TO BE USED FURTHER: rolling_snr_analysis.ipynb loads
+rolling_snr_{peaks_name}.npz from OUTPUT_DIR to visualize SNR over time
+interactively. Since the adaptive-threshold idea was abandoned, in practice
+nothing downstream actually consumes these files — they're diagnostic
+artifacts from that investigation, not pipeline input for anything else.
 """
 
 import os

@@ -2,7 +2,95 @@
 """
 Peak Localization and Drift Correction Pipeline
 ================================================
-Clean workflow for spike localization, motion correction, and detection integration
+THE active pipeline — use this one. Run via run_peak_localisation.sh.
+
+WHAT IT DOES: detects spikes with mua_pipeline.run_mua_pipeline() (thresholding
++ matched filtering, see mua_pipeline.py), localizes each one in space with
+SpikeInterface's 'monopolar_triangulation' method, estimates motion/drift from
+those locations, corrects for it, then re-detects and re-localizes on the
+corrected data as a sanity check.
+
+**NOTE: the recommended workflow is to run this script for detection + localization only, 
+then run the separate /motion/ pipeline for motion estimation and correction. This is to 
+allow more control on fine tuning the parameters of each step. See PREFERRED SETTINGS section below.**
+
+OUTPUTS, all written to <base_path>/<folder_name>/ (folder_name defaults to
+"thresholding_peaks_<detect_threshold>", see --folder_name above):
+  peaks0.npy, peaks1.npy, peaks2.npy, peaks_matched.npy, peaks_combined1.npy,
+  peaks_combined2.npy   — from mua_pipeline.run_mua_pipeline(); two detection
+                          branches that get merged:
+    Branch A — plain threshold-crossing detection:
+      peaks0   raw threshold crossings (every sample/channel crossing
+               detect_threshold x noise; not deduplicated — one spike
+               triggers many nearby crossings in time and across channels).
+      peaks1   peaks0 after spatial_and_temporal_filter groups crossings
+               close in time+channel into one representative peak per spike
+               (the "same spike -> one entry" dedup step).
+      peaks2   peaks1 after filter_peaks_by_spatial_support: keeps only
+               peaks where a neighboring channel also shows a supporting
+               crossing in the same window (rejects single-channel noise
+               blips that don't spread across the probe like a real spike).
+               Final output of the threshold-only branch, on its own.
+    Branch B — matched-filter detection (separate, runs in parallel):
+      peaks_matched   a different detection method: build a "prototype"
+               spike waveform (learned from peaks2's waveforms, 
+               slide it across the recording as a matched filter,
+               keep points whose similarity score clears a threshold. Catches real
+               spikes too small/atypical to cross the plain amplitude
+               threshold, as long as they look like the prototype shape.
+    Merge — the actual recommended output:
+      peaks_combined1   peaks1 + peaks_matched concatenated, then run
+               through the same grouping step again — mainly resolves
+               duplicates *between* the two branches (same spike caught by
+               both methods collapses to one entry).
+      peaks_combined2   peaks_combined1 after the same spatial-support check
+               as peaks2. This is the real final output — threshold +
+               matched-filter merged. Everything downstream should use this
+               (equivalently, the sorted copy peaks_combined2_sorted.npy
+               saved below).
+    Every array carries a matched_filter_score column (NaN for pure
+    threshold-crossing peaks, a real value for matched-filter-derived ones,
+    preserved through the merge since the winning representative peak at
+    each step keeps its own score). Full derivation in mua_pipeline.py's
+    run_mua_pipeline() docstring/body.
+  peaks_combined2_sorted.npy   — peaks_combined2, sorted by sample_index —
+                          this is the actual detected-spike output of this
+                          pipeline (sample_index, channel_index, amplitude,
+                          etc. per detected spike).
+  localized_peaks_mt_raw.npy   — one (x, y, z, alpha) location per peak in
+                          peaks_combined2_sorted.npy, from monopolar
+                          triangulation — this is the localization output.
+  plots/   — QC plots (raw/localization/drift scatter, method-comparison,
+             etc.) — visual sanity checks, not consumed by anything else.
+  motion_estimates/   — only populated if RUN_DECENTRALIZED_MOTION/
+             RUN_DREDGE_MOTION are enabled (see PREFERRED SETTINGS below);
+             not used by the recommended workflow, which does motion
+             separately via motion/.
+
+WHY MONOPOLAR TRIANGULATION (not the full Boussard/IBL pipeline in
+boussard_localization.py): it's the same lineage — SpikeInterface credits
+'monopolar_triangulation' directly to Julien Boussard, Erdem Varol and Charlie
+Windolf, the same authors behind the IBL spikes_localization_registration repo.
+The difference is the full IBL pipeline additionally runs a neural-network
+denoiser on each waveform before localizing (needs a GPU, much slower), while
+monopolar_triangulation triangulates straight from the raw peak-to-peak
+amplitudes. We compared both directly (see compare_localisation.py — this was
+also the localization method used for density_decoding) and the denoiser
+version wasn't meaningfully better for the extra time cost, so monopolar
+triangulation (this script) is what we settled on. boussard_localization.py is
+kept as the standing comparison, not the default.
+
+USAGE: edit --base_path (and other CLI args, or the CONFIG section below) for
+the session to process, then `sbatch run_peak_localisation.sh`. Key settings
+to change per-session/animal:
+  --base_path                      the preprocessed/ folder for this session
+  --mua_detect_threshold            spike-detection threshold (units of noise)
+  --support_radius/--support_fraction/--support_n_required   how strict the
+                                     spatial-support artifact check is (see
+                                     mua_pipeline.py)
+  --time_start_s/--time_end_s       restrict to a sub-window (see below)
+  --folder_name                     output subfolder name, so reruns with
+                                     different settings don't collide
 
 TIME WINDOW SUPPORT
 --------------------
@@ -67,6 +155,10 @@ parser.add_argument('--matched_amplitude_threshold', type=float, default=None,
                     help='Post-hoc amplitude threshold (in units of noise) applied to peaks_matched '
                          'after matched-filtering detection. If not set, no extra amplitude '
                          'filtering is applied to peaks_matched (overrides config value).')
+parser.add_argument('--folder_name', type=str, default=None,
+                    help='Overrides the auto-generated output folder name '
+                         '(default: thresholding_peaks_<detect_threshold>). Useful for keeping '
+                         'a re-run from colliding with an existing results folder.')
 args = parser.parse_args()
 
 # %%
@@ -106,36 +198,85 @@ MOTION_DIR = None  # Set below, after FOLDER_NAME is determined
 # --- Processing Flags ---
 LOAD_COMPUTED_DATA = True  # Set to False to recompute everything
 
+# =============================================================================
+# RECOMMENDED WORKFLOW / PREFERRED SETTINGS
+# =============================================================================
+# In practice it is recommended to run this script for DETECTION + LOCALIZATION ONLY (defaults
+# below reflect that). Motion is then handled separately:
+#   1. peak_localisation.py (this script)         -> peaks + locations
+#   2. slope_artifact_filter_analysis.ipynb        -> filter out artifacts too
+#                                                      narrow to be real spikes
+#   3. motion/run_dredge_chunked.py + stitch_motion.py + correct_motion.py
+#                                                   -> motion estimation
+#                                                      (chunked, for long
+#                                                      recordings) + correction
+# Reason: each dataset needs different parameters at each step, long
+# recordings can exceed the 24h SLURM limit if run end-to-end in one job, and
+# running everything as one script hides which step actually went wrong. The
+# separate /motion/ pipeline also supports chunked estimation for long
+# recordings (see run_dredge_chunked.py), which this script does not.
+
 # --- Localization Methods to Run ---
-RUN_MONOPOLAR_TRIANGULATION = True # need to set to true
-RUN_CENTER_OF_MASS = False
+RUN_MONOPOLAR_TRIANGULATION = True   # preferred method — keep True
+RUN_CENTER_OF_MASS = False           # not used, a much simpler method but much less accurate
 
 # --- Motion Estimation Methods to Run ---
-RUN_DECENTRALIZED_MOTION = False
-RUN_DREDGE_MOTION = True # need to set to true
+# it is preferred to, instead of running motion estimation here, run the separate /motion/ 
+# pipeline (step 3 above) which allows chunking on long data (much faster), and more control over parameters. 
+# 
+# DREDge is the preferred motion estimation method (also what
+# motion/run_dredge_chunked.py uses for the real, chunked estimation) —
+# "decentralized" is not preferred. Note: with APPLY_MOTION_CORRECTION=False
+# below, this only computes an estimate for the drift-overlay plots; it is
+# NOT what's actually used to correct anything for long recordings — that's
+# the separate /motion/ pipeline (step 3 above).
+RUN_DECENTRALIZED_MOTION = False     # not preferred, much simpler and less accurate
+RUN_DREDGE_MOTION = False            # preferred motion estimation method if have to 
+                                     # use this script; remember that the best practice 
+                                     # is to run the separate /motion/ pipeline for 
+                                     # motion estimation and correction.
 
 # --- Motion Correction (Interpolation) ---
-APPLY_MOTION_CORRECTION = False # need to set to true
-CORRECTION_METHOD = "dredge"  # "decentralized" or "dredge"
+# Keep this False. This applies motion correction by interpolating the
+# recording itself (si.interpolate_motion) — this is the legacy path and
+# isn't well tested/trusted; not what's actually used. The preferred approach
+# is to correct motion using motion/correct_motion.py, which instead subtracts the estimated motion
+# directly from peak depths / shifts channel assignments — no recording
+# interpolation. See motion/correct_motion.py's header for why.
+APPLY_MOTION_CORRECTION = False
+CORRECTION_METHOD = "dredge"  # "decentralized" or "dredge" — only matters if APPLY_MOTION_CORRECTION=True
 
 # --- Re-detect Peaks After Correction (using mua_pipeline) ---
+# Keep this False. Legacy section, doesn't test well — only runs at all if
+# APPLY_MOTION_CORRECTION=True anyway; recording gets messed up after motion interpolation, 
+# so re-detecting peaks on it is really not recommended. The preferred approach is to
+# just correct motion on the existing peaks and locations (see motion/correct_motion.py). 
 REDETECT_PEAKS_AFTER_CORRECTION = False
 
 # --- Rolling Noise (optional, time-varying noise levels) ---
-# If provided, uses rolling_noise_levels.npz from rolling_snr/ instead of si.get_noise_levels()
+# If provided, uses rolling_noise_levels.npz from rolling_snr.py/ instead of si.get_noise_levels();
+# it is not recommended to use rolling noise levels as they do not appear better than using a 
+# single noise level for the whole recording, and they are slower to compute.
+
+# but if need to use, need to run rolling_snr.py first to generate the rolling noise levels, then set ROLLING_NOISE_DIR to the path of the rolling_snr output folder.
 # Example: ROLLING_NOISE_DIR = os.path.join(BASE_PATH, "rolling_snr")
 # ROLLING_NOISE_DIR = os.path.join(BASE_PATH, "rolling_snr")  # Set to path/to/rolling_snr/ to use rolling noise levels
 # ROLLING_NOISE_DIR = r'/ptmp/gongt/GLC7189/GLC7189_g_g1/preprocessed/rolling_snr'
 ROLLING_NOISE_DIR = None
 
 # --- mua_pipeline Settings (for re-detection after motion correction) ---
+# Passed straight through to mua_pipeline.run_mua_pipeline() — see that
+# function's own docstring in mua_pipeline.py for the authoritative version
+# of every explanation below, and for the full list/meaning of what it
+# returns (peaks_combined2, peaks_combined1, peaks_matched, peaks0, peaks1,
+# peaks2 — peaks_combined2 is the one downstream steps use).
 MUA_SETTINGS = {
-    "detect_threshold":   3.3,
-    "exclude_sweep_ms":   0.3,
-    "spatial_radius":     10,
-    "chunk_size_s":       60.0,
-    "n_jobs":             6,
-    "proto_n_jobs":       6,
+    "detect_threshold":   3.3,   # threshold-crossing detection cutoff, in units of noise (sigma) on each channel
+    "exclude_sweep_ms":   0.3,   # temporal exclusion window (ms) around a detected peak, so the same spike isn't counted twice
+    "spatial_radius":     10,    # channels to group together (on each side) when merging threshold-crossings from the same spike across nearby channels
+    "chunk_size_s":       60.0,  # seconds of recording processed per chunk (memory/parallelism knob, doesn't change results)
+    "n_jobs":             6,     # parallel workers for the main thresholding/filtering pass
+    "proto_n_jobs":       6,     # parallel workers for building the matched-filter prototype waveform
     "load_computed_data": True,   # reload saved peaks if present
     "rolling_noise_dir":  ROLLING_NOISE_DIR,  # time-varying noise levels (optional)
 
@@ -143,33 +284,33 @@ MUA_SETTINGS = {
     # A peak is kept if at least support_n_required of the support_radius
     # channels on each side of the peak channel also cross a lowered
     # threshold of support_fraction * detect_threshold within the same window.
-    "support_radius":     2,     # how many channels to check on each side
+    "support_radius":     2,     # how many channels to check on each side; if 2, 5 channels in total are checked
     "support_fraction":   0.7,   # lowered-threshold fraction of detect_threshold
-    "support_n_required": 1,     # how many of the checked neighbors must pass
+    "support_n_required": 2,     # how many of the checked neighbors must pass
 
     # --- Matched-filter detection (peaks_matched) ---
     # matched_filter_detect_threshold controls how similar a candidate waveform
     # must be to the learned prototype (in units of noise of the matched-filter
     # convolution score) to be detected at all. None -> defaults to
-    # detect_threshold - 0.2 (previous hardcoded behaviour).
+    # detect_threshold - 0.2 (same as spikeinterface default).
     "matched_filter_detect_threshold": None,
     # matched_amplitude_threshold is an additional, separate post-hoc filter:
     # peaks_matched are kept only if their raw amplitude exceeds
     # matched_amplitude_threshold * noise level on their channel.
-    # None -> no extra amplitude filtering (previous behaviour).
+    # None -> no extra amplitude filtering (default).
     "matched_amplitude_threshold": None,
 
     # --- Matched-filter detection: other knobs (rarely need changing) ---
-    "matched_filter_peak_sign":        "neg",
-    "matched_filter_exclude_sweep_ms": 0.1,
-    "matched_filter_radius_um":        50,
-    "matched_filter_n_jobs":           8,
-    "matched_filter_chunk_duration":   "1s",
+    "matched_filter_peak_sign":        "neg",  # which deflection direction counts as a spike: 'neg', 'pos', or 'both'
+    "matched_filter_exclude_sweep_ms": 0.1,    # temporal exclusion window (ms) for the matched-filter pass specifically (separate from exclude_sweep_ms above)
+    "matched_filter_radius_um":        50,     # spatial radius (µm, physical distance not channel count) for suppressing duplicate matched-filter detections nearby
+    "matched_filter_n_jobs":           8,      # parallel workers for the matched-filter detection job
+    "matched_filter_chunk_duration":   "1s",   # chunk duration (SpikeInterface job_kwargs format) for the matched-filter detection job
 
     # --- Prototype/waveform extraction (feeds matched filtering) ---
-    "proto_ms_before":     1.0,
-    "proto_ms_after":      1.0,
-    "proto_chunk_duration": "1s",
+    "proto_ms_before":     1.0,   # ms of waveform kept before the peak sample when building the matched-filter prototype
+    "proto_ms_after":      1.0,   # ms of waveform kept after the peak sample when building the matched-filter prototype
+    "proto_chunk_duration": "1s", # chunk duration (SpikeInterface job_kwargs format) for prototype/waveform extraction
 }
 
 # Override detect_threshold from command-line if provided
@@ -202,6 +343,9 @@ if TIME_START_S is not None or TIME_END_S is not None:
     _ts_tag = f"{TIME_START_S:.0f}" if TIME_START_S is not None else "start"
     _te_tag = f"{TIME_END_S:.0f}"   if TIME_END_S   is not None else "end"
     FOLDER_NAME += f"_ts{_ts_tag}_te{_te_tag}"
+if args.folder_name is not None:
+    FOLDER_NAME = args.folder_name
+    print(f"Command-line override: folder_name = {args.folder_name}")
 if BASE_PATH is not None:
     PLOTS_DIR = os.path.join(BASE_PATH, FOLDER_NAME, "plots")
     MOTION_DIR = os.path.join(BASE_PATH, FOLDER_NAME, "motion_estimates")
@@ -993,7 +1137,11 @@ if __name__ == "__main__":
     # =============================================================================
     # MOTION CORRECTION (INTERPOLATION)
     # =============================================================================
-    
+    # LEGACY, not well tested — not what's actually used. Preferred: leave
+    # APPLY_MOTION_CORRECTION=False and use motion/correct_motion.py instead
+    # (direct subtraction of estimated motion from peak depths, no recording
+    # interpolation). See the config section above for why.
+
     print("\n" + "="*80)
     print("MOTION CORRECTION")
     print("="*80)
@@ -1040,6 +1188,8 @@ if __name__ == "__main__":
     # =============================================================================
     # RE-DETECT PEAKS ON CORRECTED DATA
     # =============================================================================
+    # LEGACY, doesn't test well — only runs if motion correction above ran
+    # (which should stay disabled). Not part of the recommended workflow.
     
     if rec_corrected is not None and REDETECT_PEAKS_AFTER_CORRECTION:
         print("\n" + "="*80)
@@ -1087,7 +1237,9 @@ if __name__ == "__main__":
     # =============================================================================
     # RE-LOCALIZE ON CORRECTED DATA
     # =============================================================================
-    
+    # LEGACY, doesn't test well — same as the two sections above, only runs
+    # if motion correction ran (which should stay disabled).
+
     if rec_corrected is not None and peaks_corrected is not None:
         print("\n" + "="*80)
         print("RE-LOCALIZING PEAKS ON CORRECTED DATA")
