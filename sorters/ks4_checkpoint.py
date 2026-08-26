@@ -24,7 +24,19 @@ Drop-in replacement for KS4.py. Same CLI. Differences:
 Resume invariant: rerunning the exact same command on an existing output
 folder picks up where the previous run stopped.
 
-USAGE / EXAMPLE (via run_ks4_checkpoint.sh, or directly):
+ENVIRONMENT NOTE — kilosort4's own auto-merge step is disabled: the `phy2`
+conda env's installed kilosort package has the `template_matching.merging_function`
+call inside `cluster_spikes()` (kilosort/run_kilosort.py) commented out by hand
+("skipped merging..." printed instead). This is a hand-edit to the installed
+package itself, not something this script does — it is NOT reproducible by
+`pip install kilosort==<version>` alone; redo that edit (or just delete the
+merging_function call) after installing kilosort into a fresh `phy2` env. See
+environments/README.md. Effect: clusters coming out of Stage 4 (cluster_spikes)
+are kilosort4's raw per-template clusters, un-merged — whatever downstream
+merging/curation you do on this output needs to account for that (it hasn't
+already been through kilosort4's own merge step).
+
+USAGE / EXAMPLE (via run_ks4_checkpoint.sh [recommended], or otherwise directly):
   python ks4_checkpoint.py \
       --root_folder /nexus/posix0/MBR-neuralsystems/ephys/GLC7189/GLC7189_g_g1 \
       --data_folder /nexus/posix0/MBR-neuralsystems/ephys/GLC7189/GLC7189_g_g1/preprocessed \
@@ -49,7 +61,32 @@ whichever params you changed from default, e.g. "nb1_thu9_thl8"):
                         ops.npy (full run state — also what
                         kilosort_diagnostic_plots-style notebooks read).
   sorter_output/_checkpoints/   — this script's own checkpoint state (safe to
-                        delete once a run has finished successfully).
+                        delete once a run has finished successfully). Two kinds:
+    progress.json               — which named stages have completed
+                        (preprocessing/drift/detect_univ/detect_clu0/detect/
+                        cluster/save) + SLURM job id/restart count. Read this
+                        first to see how far a run got.
+    ops_after_<stage>.npy       — one per completed stage: the full KS4 ops
+                        dict (whitening matrix, drift estimate, etc.) as it
+                        stood right after that stage finished.
+    st0.npy / st0_univ.npy / st_after_detect.npy / st_after_cluster.npy,
+    tF_univ.pt / tF_after_detect.pt / tF_after_cluster.pt,
+    clu_after_clu0.npy / clu_after_cluster.npy,
+    Wall_after_clu0.pt / Wall3_after_clu0.pt / Wall_after_cluster.pt
+                                — spike times / template features / cluster
+                        assignments / cluster weight matrices at each stage
+                        boundary — this is what a restart actually resumes from.
+    clustering_qr/<mode>/       — INTRA-stage checkpoints for clustering_qr
+                        (the single largest stage) — saved every SAVE_EVERY
+                        pair-iterations, not just at the stage boundary, so a
+                        walltime kill doesn't lose an entire long clustering
+                        run. `_complete` marks a mode as finished.
+    extract_partial_*.json/.npy, extract_tF_memmap.dat
+                                — INTRA-stage checkpoints for feature
+                        extraction (the other slow step), saved per-batch.
+                        tF is kept as a disk-backed memmap rather than an
+                        in-memory array specifically to avoid OOM on large
+                        recordings (documented inline where this is set up).
   kilosort_params.txt        — every parameter this run actually used, for
                         reproducibility.
 """

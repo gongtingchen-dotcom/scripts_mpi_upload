@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
 """
 Comparison method, not the default — see peak_localisation.py for the active
-pipeline (monopolar triangulation via spikeinterface, which is a simpler version 
-of boussard_localization). This script runs the full IBL localization
-pipeline instead: a neural-network denoiser on each waveform, then
-localization from the denoised waveform. Needs a GPU and is much slower than
-monopolar triangulation. This was the localization method that Yizi Zhang's 
-density decoding paper uses, and is directly compared against monopolar triangulation in
-compare_localisation.py — the denoiser version wasn't meaningfully better for
-the extra cost, so monopolar triangulation is what the active pipeline uses.
-Kept here as the standing comparison / for cases where the denoiser step
-might matter more (e.g. noisier data).
+pipeline (monopolar triangulation, a simpler/faster version of this same
+method). Runs the full IBL localization pipeline: a neural-network denoiser
+on each waveform, then localization from the denoised result. Needs a GPU,
+much slower than monopolar triangulation. This is the method Yizi Zhang's
+density decoding paper uses. Compared head-to-head against monopolar
+triangulation in compare_localisation.py — not meaningfully better for the
+extra cost, hence not the default; see peak_detect_localise/README.md for
+the full comparison. Kept as the standing comparison, or for cases where the
+denoiser might matter more (e.g. noisier data).
 
 No CLI args — edit the hardcoded paths/config below (REC_DIR, PEAKS_DIR, the
 RUN_* flags) for the session to process, then submit via

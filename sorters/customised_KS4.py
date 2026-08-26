@@ -33,7 +33,8 @@ Pipeline
  8. Learn wPCA from drift-corrected data (spikedetect.run — detections discarded).
  9. Assign each spike to nearest universal template → channel neighbourhood.
 10. Extract wPCA features at spike times.
-11. KS4 cluster_spikes() (clustering_qr + merging).
+11. KS4 cluster_spikes() (clustering_qr; merging step is disabled in this
+    conda env — see ks4_checkpoint.py's ENVIRONMENT NOTE).
 12. Save Phy-compatible output to RESULTS_DIR.
 
 =====================================================================

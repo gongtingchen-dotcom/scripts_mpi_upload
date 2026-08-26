@@ -67,18 +67,10 @@ OUTPUTS, all written to <base_path>/<folder_name>/ (folder_name defaults to
              not used by the recommended workflow, which does motion
              separately via motion/.
 
-WHY MONOPOLAR TRIANGULATION (not the full Boussard/IBL pipeline in
-boussard_localization.py): it's the same lineage — SpikeInterface credits
-'monopolar_triangulation' directly to Julien Boussard, Erdem Varol and Charlie
-Windolf, the same authors behind the IBL spikes_localization_registration repo.
-The difference is the full IBL pipeline additionally runs a neural-network
-denoiser on each waveform before localizing (needs a GPU, much slower), while
-monopolar_triangulation triangulates straight from the raw peak-to-peak
-amplitudes. We compared both directly (see compare_localisation.py — this was
-also the localization method used for density_decoding) and the denoiser
-version wasn't meaningfully better for the extra time cost, so monopolar
-triangulation (this script) is what we settled on. boussard_localization.py is
-kept as the standing comparison, not the default.
+WHY MONOPOLAR TRIANGULATION, not boussard_localization.py's full IBL pipeline:
+compared head-to-head in compare_localisation.py, the extra GPU-only denoising
+step there wasn't meaningfully better for the time cost. Full reasoning in
+peak_detect_localise/README.md.
 
 USAGE: edit --base_path (and other CLI args, or the CONFIG section below) for
 the session to process, then `sbatch run_peak_localisation.sh`. Key settings
@@ -201,20 +193,10 @@ LOAD_COMPUTED_DATA = True  # Set to False to recompute everything
 # =============================================================================
 # RECOMMENDED WORKFLOW / PREFERRED SETTINGS
 # =============================================================================
-# In practice it is recommended to run this script for DETECTION + LOCALIZATION ONLY (defaults
-# below reflect that). Motion is then handled separately:
-#   1. peak_localisation.py (this script)         -> peaks + locations
-#   2. slope_artifact_filter_analysis.ipynb        -> filter out artifacts too
-#                                                      narrow to be real spikes
-#   3. motion/run_dredge_chunked.py + stitch_motion.py + correct_motion.py
-#                                                   -> motion estimation
-#                                                      (chunked, for long
-#                                                      recordings) + correction
-# Reason: each dataset needs different parameters at each step, long
-# recordings can exceed the 24h SLURM limit if run end-to-end in one job, and
-# running everything as one script hides which step actually went wrong. The
-# separate /motion/ pipeline also supports chunked estimation for long
-# recordings (see run_dredge_chunked.py), which this script does not.
+# In practice it is recommended to run this script for DETECTION + LOCALIZATION ONLY
+# (defaults below reflect that), then slope_artifact_filter_analysis.ipynb, then
+# motion/ for estimation+correction. Full 3-step workflow and why:
+# peak_detect_localise/README.md.
 
 # --- Localization Methods to Run ---
 RUN_MONOPOLAR_TRIANGULATION = True   # preferred method — keep True

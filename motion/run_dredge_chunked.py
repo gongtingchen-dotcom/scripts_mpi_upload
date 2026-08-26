@@ -1,11 +1,11 @@
 """
 Preferred motion estimation script — use this. Run after
-peak_localisation.py (detection+localization) and slope_artifact_filter_analysis.ipynb
+peak_localisation.py (detection+localization) and optionally slope_artifact_filter_analysis.ipynb
 (artifact filtering); mirrors peak_localisation.py's BASE_PATH/FOLDER_NAME/
 peak-file settings, see the CONFIGURATION section below. Submit via
-run_dredge_chunks.sh (one array job per chunk) then run_dredge_stitch.sh
-(stitches the chunks together, using this script's own --stitch mode below).
-Feeds into correct_motion.py for the actual correction.
+run_dredge_chunks.sh (one array job per chunk) then run_dredge_stitch.sh (if multiple chunks).
+
+NEXT STEP: use correct_motion.py for quality control. 
 
 DREDge motion estimation with time-chunking to avoid OOM.
 
@@ -13,17 +13,14 @@ Two modes:
   --chunk_idx N    Estimate motion for chunk N and save to chunks/motion_dredge_{start}min_{end}min/
   --stitch         Load all saved chunks, align via overlap, save combined
                    motion_dredge_stitched_<run_name> (or motion_dredge_stitched if no --run_name).
-                   REQUIRES chunks_<run_name>/motion_dredge_*min_*min/ to
-                   already exist (from prior --chunk_idx runs) — if none are
-                   found, fails immediately with FileNotFoundError, doesn't
-                   wait or partially stitch whatever happens to be present.
-                   Do NOT call --stitch from inside a SLURM array task
-                   alongside --chunk_idx — array tasks run in parallel with
-                   no ordering guarantee, so the first task to finish would
-                   stitch an incomplete set of chunks with no error. Run the
-                   two steps separately: sbatch run_dredge_chunks.sh, wait
-                   for the whole array to finish, THEN sbatch
-                   run_dredge_stitch.sh.
+                   REQUIRES chunks_<run_name>/motion_dredge_*min_*min/ to already
+                   exist — if none found, fails immediately with FileNotFoundError.
+                   NEVER call --stitch from inside a SLURM array task alongside
+                   --chunk_idx: array tasks run in parallel with no ordering
+                   guarantee, so the first to finish would stitch an incomplete
+                   set of chunks with no error. Run separately: sbatch
+                   run_dredge_chunks.sh, confirm the whole array finished, THEN
+                   sbatch run_dredge_stitch.sh.
 
 USAGE / EXAMPLES (normally via run_dredge_chunks.sh + run_dredge_stitch.sh,
 which pass --run_name and loop --chunk_idx over the SLURM array):

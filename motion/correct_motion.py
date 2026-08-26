@@ -6,19 +6,11 @@
 # channel assignment — no recording interpolation. See get_corrected_depths()
 # / get_channel_corrected_binned() below for the actual math.
 #
-# IMPORTANT — what this script actually produces: run standalone, it is a QC
-# tool — it saves only plots (scatter/channel plots of raw vs. corrected
-# positions), no corrected-peaks data file. Checked directly: there is no
-# np.save (or .save()) call anywhere in this file. The actual downstream
-# consumer, density_decoding.ipynb, does NOT import this script — it
-# reimplements the same nearest-bin-lookup correction inline (explicitly
-# commented there as "same as correct_motion.py get_corrected_depths"),
-# reading displacement_seg0.npy/temporal_bins_s_seg0.npy/spatial_bins_um.npy
-# straight from the stitched motion estimate. So use this script to sanity-
-# check a motion estimate visually before trusting it; the actual correction
-# for downstream analysis happens wherever that analysis reads the motion
-# estimate directly (see density_decoding.ipynb for the reference
-# implementation of the same math).
+# IMPORTANT: QC only — saves plots, no corrected-peaks data file (checked:
+# no np.save/.save() anywhere here). density_decoding.ipynb does NOT import
+# this script; it reimplements the same nearest-bin-lookup math inline,
+# reading the motion estimate directly. Use this to visually sanity-check a
+# motion estimate; see motion/README.md for the full finding.
 #
 # USAGE / EXAMPLES: works on ANY single motion-estimate directory — you do
 # NOT need "several chunks" to run this. --motion_path takes one estimate

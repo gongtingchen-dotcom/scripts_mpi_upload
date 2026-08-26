@@ -5,13 +5,10 @@
 # chunks, not the separate stitch_motion.py — see that file's header).
 # Submit with: sbatch run_dredge_stitch.sh
 #
-# REQUIRES the chunk estimates to already exist under
-# motion_estimates/chunks_<run_name>/ (from run_dredge_chunks.sh). If none
-# are found, --stitch fails immediately and cleanly with
-# FileNotFoundError("No chunks found in ..."), it does not run and wait.
-# Run these two steps separately: submit run_dredge_chunks.sh first, confirm
-# (e.g. via `sacct`) that every array task in it finished successfully, THEN
-# submit this script — submitting it too early will just error out.
+# REQUIRES every chunk from run_dredge_chunks.sh to already exist — confirm
+# via `sacct` that the whole array job finished before submitting this, or
+# it fails immediately with FileNotFoundError (see run_dredge_chunked.py's
+# --stitch docs for why these must be two separate manual steps).
 #
 #SBATCH -D ./
 #SBATCH -o ./slurm/%j/logs/dredge_stitch.log

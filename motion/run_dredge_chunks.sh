@@ -3,20 +3,9 @@
 # task per time chunk of the recording. Edit BASE_PATH/FOLDER_NAME/chunk
 # duration in run_dredge_chunked.py, and the --array range below to match
 # the number of chunks your recording needs, then: sbatch run_dredge_chunks.sh
-# Wait for the WHOLE array to finish, then separately submit
-# run_dredge_stitch.sh to combine the chunks — these are two deliberately
-# separate, manually-run steps (see NOTE below), not one job.
-#
-# NOTE: don't fold the --stitch step into this script. This is a SLURM
-# ARRAY job — tasks run independently and in parallel, with no built-in way
-# for one task to know whether the others have finished. If a task called
-# --stitch right after its own --chunk_idx, the first task to finish would
-# stitch whatever chunks happen to exist yet — silently producing an
-# incomplete/wrong result, not a clean error (stitch_chunks() just globs
-# whatever's on disk; it doesn't check that every expected chunk is there).
-# Multiple tasks would also race to write the same output file. Submit
-# run_dredge_stitch.sh yourself once you've confirmed (e.g. via `sacct`)
-# that every array task completed successfully.
+# Wait for the WHOLE array to finish (confirm via `sacct`), then separately
+# submit run_dredge_stitch.sh — never fold --stitch into this array job
+# itself (race condition, see run_dredge_chunked.py's --stitch docs for why).
 #
 # Initial working directory:
 #SBATCH -D ./

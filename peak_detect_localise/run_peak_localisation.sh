@@ -4,13 +4,8 @@
 # DETECTION + LOCALIZATION MODE ONLY — motion estimation/correction stays
 # disabled here (see the RUN_*/APPLY_MOTION_CORRECTION flags and their
 # comments in peak_localisation.py's config section) and is done afterwards
-# as separate steps:
-#   1. this script                              -> peaks + locations
-#   2. slope_artifact_filter_analysis.ipynb      -> filter narrow-waveform artifacts
-#   3. motion/run_dredge_chunks.sh + run_dredge_stitch.sh + run_correct_motion_chunks.sh
-#                                                 -> motion estimation (chunked) + correction
-# See peak_localisation.py's own header for why this is done as separate
-# steps instead of end-to-end in this one script.
+# as separate steps (slope_artifact_filter_analysis.ipynb, then motion/) —
+# see peak_detect_localise/README.md for the full workflow and why.
 #
 # Edit --base_path and the other CLI args below for the session to process
 # (see peak_localisation.py's header for what each one does), then submit
