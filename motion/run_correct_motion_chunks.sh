@@ -1,4 +1,12 @@
 #!/bin/bash -l
+# Step 3 (QC) of the preferred motion pipeline — runs correct_motion.py's
+# plots on every chunk-level motion estimate found under
+# MOTION_BASE/chunks_<run_name>. Produces sanity-check plots only, not a
+# corrected-data file — see correct_motion.py's header for what actually
+# consumes a motion estimate downstream. Edit MOTION_BASE below for the
+# session, then run directly (not via sbatch — it self-submits as a SLURM
+# array job, see below):
+#
 # Usage (to submit):  ./run_correct_motion_chunks.sh [run_name] [amp_pct]
 #   run_name : suffix after "chunks_"  (default: n25)
 #   amp_pct  : amplitude percentile    (default: 20)
@@ -10,8 +18,8 @@
 # Initial working directory:
 #SBATCH -D ./
 # Output / error logs per chunk:
-#SBATCH -o /u/gongt/slurm/%j/logs/correct_motion_%a.log
-#SBATCH -e /u/gongt/slurm/%j/logs/correct_motion_%a.log
+#SBATCH -o ./slurm/%j/logs/correct_motion_%a.log
+#SBATCH -e ./slurm/%j/logs/correct_motion_%a.log
 # Job name:
 #SBATCH -J correct_motion_chunk
 #
@@ -78,14 +86,14 @@ if [ -z "$MOTION_NAME" ]; then
     exit 1
 fi
 
-mkdir -p /u/gongt/slurm/$SLURM_JOB_ID/logs
+mkdir -p ./slurm/$SLURM_JOB_ID/logs
 
 echo "Job array index : $SLURM_ARRAY_TASK_ID"
 echo "Chunks dir      : $CHUNKS_DIR"
 echo "Motion name     : $MOTION_NAME"
 echo "Amp percentile  : $AMP_PCT"
 
-$PYTHON /u/gongt/scripts/correct_motion.py \
+$PYTHON /u/gongt/scripts/motion/correct_motion.py \
     --chunks_dir "$CHUNKS_DIR" \
     --motion_name "$MOTION_NAME" \
     --amp_pct "$AMP_PCT"

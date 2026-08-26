@@ -1,16 +1,87 @@
 """
+Preferred motion estimation script — use this. Run after
+peak_localisation.py (detection+localization) and slope_artifact_filter_analysis.ipynb
+(artifact filtering); mirrors peak_localisation.py's BASE_PATH/FOLDER_NAME/
+peak-file settings, see the CONFIGURATION section below. Submit via
+run_dredge_chunks.sh (one array job per chunk) then run_dredge_stitch.sh
+(stitches the chunks together, using this script's own --stitch mode below).
+Feeds into correct_motion.py for the actual correction.
+
 DREDge motion estimation with time-chunking to avoid OOM.
 
 Two modes:
   --chunk_idx N    Estimate motion for chunk N and save to chunks/motion_dredge_{start}min_{end}min/
-  --stitch         Load all saved chunks, align via overlap, save combined motion_dredge_all
+  --stitch         Load all saved chunks, align via overlap, save combined
+                   motion_dredge_stitched_<run_name> (or motion_dredge_stitched if no --run_name).
+                   REQUIRES chunks_<run_name>/motion_dredge_*min_*min/ to
+                   already exist (from prior --chunk_idx runs) — if none are
+                   found, fails immediately with FileNotFoundError, doesn't
+                   wait or partially stitch whatever happens to be present.
+                   Do NOT call --stitch from inside a SLURM array task
+                   alongside --chunk_idx — array tasks run in parallel with
+                   no ordering guarantee, so the first task to finish would
+                   stitch an incomplete set of chunks with no error. Run the
+                   two steps separately: sbatch run_dredge_chunks.sh, wait
+                   for the whole array to finish, THEN sbatch
+                   run_dredge_stitch.sh.
 
-Usage:
-  # estimate chunk 3
-  python run_dredge_chunked.py --chunk_idx 3
+USAGE / EXAMPLES (normally via run_dredge_chunks.sh + run_dredge_stitch.sh,
+which pass --run_name and loop --chunk_idx over the SLURM array):
+  # estimate chunk 3, tagged run "2"
+  python run_dredge_chunked.py --chunk_idx 3 --run_name 2
+
+  # restrict to high-amplitude peaks and a depth sub-range (for a noisy
+  # dataset, or to re-estimate just one problematic depth band)
+  python run_dredge_chunked.py --chunk_idx 3 --run_name 2 --amp_pct 20 --depth_min 700 --depth_max 3200
+
+  # see how many chunks a recording needs (for sizing the --array range in run_dredge_chunks.sh)
+  python run_dredge_chunked.py --list_chunks
 
   # stitch all chunks into one motion object
-  python run_dredge_chunked.py --stitch
+  python run_dredge_chunked.py --stitch --run_name 2
+
+PARAMETERS:
+  --run_name          tags this batch of chunks (chunks_<run_name>/) so
+                       different parameter choices don't collide on disk.
+  --amp_pct            minimum amplitude percentile for peaks passed to
+                       DREDge (0 = no filter). Restricting to high-amplitude
+                       peaks reduces spatial-histogram noise — worth raising
+                       on noisy datasets.
+  --depth_min/--depth_max   restrict estimation to a depth sub-range (µm) of
+                       the probe — use if one region (e.g. very shallow/deep)
+                       needs a different amp_pct/depth range than the rest;
+                       combine per-range estimates afterwards with
+                       combine_motions.py.
+  CHUNK_DURATION_S / OVERLAP_S (edit in this file, not CLI) — chunk length
+                       and how much consecutive chunks overlap (needs to be
+                       >= DREDGE_PARAMS['time_horizon_s'] for reliable
+                       alignment when stitching).
+  DREDGE_PARAMS (edit in this file) — passed straight to
+                       spikeinterface.sortingcomponents.motion.estimate_motion:
+    time_horizon_s      how far back/forward (s) DREDge looks when estimating
+                       displacement at each time bin — larger is smoother but
+                       less responsive to fast drift.
+    win_step_um / win_scale_um   spacing/size (µm) of the spatial windows
+                       motion is estimated within.
+    max_disp_um          largest displacement (µm) DREDge will consider —
+                       too small clips real drift, too large lets noise in.
+    bin_s                 time bin width (s) for the displacement estimate.
+    mincorr               minimum cross-correlation to trust a time-bin pair;
+                       raise on noisy data to drop unreliable pairs.
+    thomas_kw.lambda_s/lambda_t   smoothing strength in space/time for the
+                       final displacement solve.
+
+OUTPUTS, under BASE_PATH/FOLDER_NAME/motion_estimates/:
+  chunks_<run_name>/motion_dredge_<start>min_<end>min/   — one per chunk, an
+                       si.Motion object (load with si.Motion.load(...)) plus
+                       a _params.json recording exactly what was run.
+  motion_dredge_stitched_<run_name>/    — the stitched, full-recording motion
+                       estimate (from --stitch). NOTE: this is a SIBLING of
+                       chunks_<run_name>/, not inside it — both live directly
+                       under motion_estimates/. (motion_dredge_stitched/ only if
+                       --stitch is run with no --run_name at all.) This
+                       stitched estimate is what correct_motion.py and
+                       downstream analyses actually read.
 """
 
 import argparse
@@ -24,13 +95,13 @@ from spikeinterface.sortingcomponents.motion import estimate_motion
 # CONFIGURATION — mirror peak_localisation.py settings
 # =============================================================================
 
-BASE_PATH       = r"/ptmp/gongt/GLC6962_l_g1/preprocessed"
-FOLDER_NAME     = "thresholding_peaks"
+BASE_PATH       = r"/ptmp/gongt/GLC7189/GLC7189_g_g1/preprocessed"
+FOLDER_NAME     = "thresholding_peaks_3.3_new"
 PEAKS_FILENAME  = "peaks_combined2_sorted.npy"
 # LOC_FILENAME    = None
 LOC_FILENAME    = "localized_peaks_mt_raw.npy"  # set to None to derive locations from max channel depth
 
-CHUNK_DURATION_S = 70 * 60 * 5   # 70 min per chunk
+CHUNK_DURATION_S = 70 * 60 * 5   # 350 min per chunk
 OVERLAP_S        = 10 * 60   # 10 min overlap (>= time_horizon_s for reliable alignment)
 STEP_S           = CHUNK_DURATION_S - OVERLAP_S   # 60 min advance per chunk
 
@@ -70,7 +141,7 @@ base_dir    = Path(BASE_PATH) / FOLDER_NAME
 motion_dir  = base_dir / "motion_estimates"
 # chunks_dir and output_name are set at runtime from --run_name (see main below)
 chunks_dir  = motion_dir / "chunks"
-OUTPUT_NAME = "motion_dredge_all"
+OUTPUT_NAME = "motion_dredge_stitched"  # used only if --stitch is run with no --run_name
 
 # =============================================================================
 # HELPERS
@@ -220,7 +291,7 @@ def stitch_chunks(run_name=None):
 
     # Discover chunks in order
     _chunks_dir = (motion_dir / f"chunks_{run_name}") if run_name else chunks_dir
-    _output_name = f"motion_dredge_{run_name}" if run_name else OUTPUT_NAME
+    _output_name = f"motion_dredge_stitched_{run_name}" if run_name else OUTPUT_NAME
     chunk_paths = sorted(_chunks_dir.glob("motion_dredge_*min_*min"))
     if not chunk_paths:
         raise FileNotFoundError(f"No chunks found in {chunks_dir}")
@@ -319,7 +390,7 @@ if __name__ == "__main__":
                        help="List all chunks without running anything")
     parser.add_argument("--run_name", type=str, default=None,
                         help="Name suffix for this run (e.g. 'v2'). "
-                             "Chunks go to chunks_<run_name>/, output to motion_dredge_<run_name>.")
+                             "Chunks go to chunks_<run_name>/, output to motion_dredge_stitched_<run_name>.")
     parser.add_argument("--amp_pct", type=int, default=None,
                         help="Minimum amplitude percentile for DREDge peaks (e.g. 50 keeps top 50%%). "
                              "Overrides AMP_PERCENTILE in script. 0 or omit = no filter.")

@@ -1,3 +1,7 @@
+# Scratch/dev script, not part of the pipeline — hardcoded to one specific
+# dataset/chunk, used while developing correct_motion.py's correction logic.
+# See correct_motion.py for the actual, general-purpose script.
+
 # %% [markdown]
 # #### **IMPORTS & SETUP**
 

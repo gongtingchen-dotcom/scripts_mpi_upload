@@ -1,4 +1,11 @@
 """
+Only needed for the Boussard-localization comparison track, not the default
+pipeline (which uses run_dredge_chunked.py directly on
+peak_localisation.py's monopolar-triangulation output). Use this only if
+you're specifically working with boussard_localization.py's output — see
+peak_detect_localise/boussard_localization.py's header for why that's not
+the default.
+
 DREDge motion estimation from Boussard localisation outputs, with time-chunking.
 
 Unlike run_dredge_chunked.py (which uses SpikeInterface peaks + localized_peaks_*.npy),

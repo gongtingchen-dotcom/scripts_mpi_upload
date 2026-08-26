@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
 """
+SUPERSEDED by motion_comparison.py — this copy still points at
+/gpfs/laur/... paths, an old storage location not reachable from this
+cluster anymore (checked: doesn't exist). motion_comparison.py has the same
+logic with corrected /ptmp/gongt/... paths. Kept only in case anything in
+this exact copy is needed for reference; use motion_comparison.py instead.
+
 Compare multiple SpikeInterface motion-estimation presets on the same data chunk.
 
 For each preset in PRESETS, this script:

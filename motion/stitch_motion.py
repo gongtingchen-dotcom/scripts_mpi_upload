@@ -1,4 +1,12 @@
 """
+WORTH CHECKING — possibly superseded. run_dredge_chunked.py (the preferred
+pipeline, see its header) has its own self-contained stitch_chunks()
+function used by its --stitch mode / run_dredge_stitch.sh, independent from
+this file — this script isn't called by anything else here. Not certain
+whether this predates that and was folded in, or is still meant to be used
+standalone for something the built-in stitching doesn't cover; check before
+relying on either one silently doing the same thing.
+
 stitch_motion_chunks.py
 =======================
 Stitch two overlapping DREDge motion estimations into a single si.Motion object.

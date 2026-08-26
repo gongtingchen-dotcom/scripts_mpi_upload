@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""
+""" 
+Diagnostic/exploration tool, not part of the default pipeline (which uses
+DREDge via run_dredge_chunked.py directly, not through si.compute_motion
+presets) — use this if you want to sanity-check DREDge against other
+SpikeInterface motion-estimation presets on a specific dataset. Run by hand.
+
 Compare multiple SpikeInterface motion-estimation presets on the same data chunk.
 
 For each preset in PRESETS, this script:

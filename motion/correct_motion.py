@@ -1,3 +1,60 @@
+# Preferred motion correction approach — use this math, not peak_localisation.py's
+# built-in interpolation-based correction (see that script's header for why).
+# Run after run_dredge_chunks.sh + run_dredge_stitch.sh (or --motion_path /
+# --motion_root pointed at a specific motion estimate). Corrects by directly
+# subtracting the estimated motion from each peak's depth / shifting its
+# channel assignment — no recording interpolation. See get_corrected_depths()
+# / get_channel_corrected_binned() below for the actual math.
+#
+# IMPORTANT — what this script actually produces: run standalone, it is a QC
+# tool — it saves only plots (scatter/channel plots of raw vs. corrected
+# positions), no corrected-peaks data file. Checked directly: there is no
+# np.save (or .save()) call anywhere in this file. The actual downstream
+# consumer, density_decoding.ipynb, does NOT import this script — it
+# reimplements the same nearest-bin-lookup correction inline (explicitly
+# commented there as "same as correct_motion.py get_corrected_depths"),
+# reading displacement_seg0.npy/temporal_bins_s_seg0.npy/spatial_bins_um.npy
+# straight from the stitched motion estimate. So use this script to sanity-
+# check a motion estimate visually before trusting it; the actual correction
+# for downstream analysis happens wherever that analysis reads the motion
+# estimate directly (see density_decoding.ipynb for the reference
+# implementation of the same math).
+#
+# USAGE / EXAMPLES: works on ANY single motion-estimate directory — you do
+# NOT need "several chunks" to run this. --motion_path takes one estimate
+# (a single chunk's, or the final stitched one, doesn't matter which);
+# --motion_root is only for the separate convenience of visualizing many at
+# once in one call.
+#   # single estimate — the final stitched result
+#   python correct_motion.py --motion_path /ptmp/gongt/GLC7189/GLC7189_g_g1/preprocessed/thresholding_peaks_3.3_new/motion_estimates/motion_dredge_stitched_2
+#   # single estimate — one specific chunk
+#   python correct_motion.py --motion_path /ptmp/gongt/GLC7189/GLC7189_g_g1/preprocessed/thresholding_peaks_3.3_new/motion_estimates/chunks_2/motion_dredge_0000min_0350min
+#   # every motion_* folder under a root (batch mode — visualize all chunks in one call)
+#   python correct_motion.py --motion_root /ptmp/gongt/GLC7189/GLC7189_g_g1/preprocessed/thresholding_peaks_3.3_new/motion_estimates/chunks_2
+#   # against Boussard localization output instead of the standard peaks files
+#   python correct_motion.py --motion_path <...> --boussard
+# The batch (--motion_root) form is also what run_correct_motion_chunks.sh
+# automates as a SLURM array job (one task per discovered chunk folder).
+#
+# PARAMETERS:
+#   --motion_path / --motion_root   explicit motion estimate dir(s), or a
+#                        root dir to search (with --motion_glob, default
+#                        "motion_*") for motion folders under it.
+#   --amp_pct             minimum amplitude percentile for peaks included in
+#                        the QC plots (0 = no filter) — should match whatever
+#                        was used for the motion estimate itself (run_dredge_chunked.py's --amp_pct).
+#   --boussard             use Boussard localization output
+#                        (boussard_localization_merged/) instead of the
+#                        standard peaks_combined2_sorted + localized_peaks_mt_raw files.
+#   --chunks_dir / --motion_name   legacy way to point at one motion folder by
+#                        chunks-subfolder + name instead of a full path;
+#                        prefer --motion_path.
+#
+# OUTPUTS: plots only, saved into the motion estimate folder(s) being
+# checked — drift scatter (raw and corrected), motion overlay, and
+# per-channel correction plots, each windowed to a few chosen time ranges.
+# No .npy/data files are written by this script.
+
 # %% [markdown]
 # #### **IMPORTS**
 
