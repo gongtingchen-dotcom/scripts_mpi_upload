@@ -11,7 +11,7 @@ of a chosen behavioural PC out. See [`../README.md`](../README.md).
 `density_decoding` editable install — the actual GMM/GLM/ADVI pipeline all the
 scripts here call into (`decode_pipeline`, `behavior_decoder`, `advi`, `glm`).
 Already listed correctly in the `.yml` as an editable git install pinned to a
-specific commit; repo: `git@gitlab.mpcdf.mpg.de:gongt/density_decoding.git`. See
+specific commit; repo: `git@gitlab.mpcdf.mpg.de:mpibr/laur/density_decoding.git`. See
 `../environments/README.md`.
 
 ## Main pipeline

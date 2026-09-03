@@ -36,17 +36,16 @@ remote**:
 - **`slay`** (used by the `slay` env) — old-API fork with the merge-finding
   functions `try_merge_selfdbuild_cleaned.py` needs (the rewritten PyPI `slay`
   package does NOT have them — do not let pip silently resolve to that one).
-  Repo: `git@gitlab.mpcdf.mpg.de:gongt/slay.git`.
+  Repo: `git@gitlab.mpcdf.mpg.de:mpibr/laur/slay.git`.
 - **`density_decoding`** (used by the `density_decoding` env) — the actual
   GMM/GLM/ADVI decode pipeline `density_decoding_unified.py` calls.
-  Repo: `git@gitlab.mpcdf.mpg.de:gongt/density_decoding.git`.
+  Repo: `git@gitlab.mpcdf.mpg.de:mpibr/laur/density_decoding.git`.
 - **`subtraction_pipeline`** (used by the `spikeinterface` env, only for the
-  legacy `peak_detect_localise/boussard_localization.py` comparison path) — a
-  local fork of int-brain-lab's `spikes_localization_registration`, pinned to the
-  last **committed** state on that fork. **This fork has additional local edits
-  that were never committed** — the pinned commit does not include them. Check
-  `git -C <fork> diff` against the working copy before relying on this path;
-  legacy/not part of the main pipeline (see `peak_detect_localise/README.md`).
+  legacy `peak_detect_localise/boussard_localization.py` comparison path) — our
+  fork of int-brain-lab's `spikes_localization_registration`, with local
+  numpy-compatibility fixes (`ndarray.ptp()` → `np.ptp()`) committed on top.
+  Repo: `git@gitlab.mpcdf.mpg.de:mpibr/laur/spikes_localization_registration_gongt.git`.
+  Legacy/not part of the main pipeline (see `peak_detect_localise/README.md`).
 
 ## One environment needs a one-line hand-edit after install
 

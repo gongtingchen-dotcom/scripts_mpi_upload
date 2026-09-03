@@ -201,4 +201,4 @@ dependencies:
       - wrapt==2.2.1
       - zarr==2.18.7
       - zipp==4.1.0
-      - -e git+ssh://git@gitlab.mpcdf.mpg.de/gongt/density_decoding.git@dcb84eeb8ad84cf1b1947d8a00ad31b12800aa72#egg=density_decoding
+      - -e git+ssh://git@gitlab.mpcdf.mpg.de/mpibr/laur/density_decoding.git@dcb84eeb8ad84cf1b1947d8a00ad31b12800aa72#egg=density_decoding

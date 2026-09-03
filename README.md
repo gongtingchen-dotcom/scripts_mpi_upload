@@ -26,12 +26,12 @@ Three repos are hand-modified/local forks, not on PyPI — clone + `pip install 
 into the matching env (all already wired into the `.yml` files as pinned editable
 installs, so a plain `conda env create` gets them automatically if you have repo
 access):
-- `slay` env ← `git@gitlab.mpcdf.mpg.de:gongt/slay.git`
-- `density_decoding` env ← `git@gitlab.mpcdf.mpg.de:gongt/density_decoding.git`
+- `slay` env ← `git@gitlab.mpcdf.mpg.de:mpibr/laur/slay.git`
+- `density_decoding` env ← `git@gitlab.mpcdf.mpg.de:mpibr/laur/density_decoding.git`
 - `spikeinterface` env, legacy Boussard localization path only ←
-  `https://github.com/int-brain-lab/spikes_localization_registration` (this fork
-  has additional uncommitted local edits not captured anywhere — see
-  `environments/README.md`)
+  `git@gitlab.mpcdf.mpg.de:mpibr/laur/spikes_localization_registration_gongt.git`
+  (our fork of `int-brain-lab/spikes_localization_registration`, with local
+  numpy-compatibility fixes — see `environments/README.md`)
 
 One more thing a plain env create can't reproduce: the `phy2` env's installed
 `kilosort` package has its own auto-merge step hand-disabled (a direct edit to the

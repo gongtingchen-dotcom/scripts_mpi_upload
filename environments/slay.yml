@@ -222,7 +222,7 @@ dependencies:
       - send2trash==2.1.0
       - setuptools==70.2.0
       - six==1.17.0
-      - -e git+ssh://git@gitlab.mpcdf.mpg.de/gongt/slay.git@16eec0a7f573505c305bbfc4990b1d57b19c70ec#egg=slay
+      - -e git+ssh://git@gitlab.mpcdf.mpg.de/mpibr/laur/slay.git@16eec0a7f573505c305bbfc4990b1d57b19c70ec#egg=slay
       - soupsieve==2.8.3
       - spikeinterface==0.104.3
       - stack-data==0.6.3

@@ -210,7 +210,7 @@ dependencies:
       - sparse==0.18.0
       - spikeinterface==0.103.2
       - statsmodels==0.14.6
-      - -e git+https://github.com/int-brain-lab/spikes_localization_registration.git@b4adaebdb093aad5face3993cf1e41fcac759078#egg=subtraction_pipeline
+      - -e git+ssh://git@gitlab.mpcdf.mpg.de/mpibr/laur/spikes_localization_registration_gongt.git@1b4ffb81fda8c2b58527ad4dd0ce15749cf1779b#egg=subtraction_pipeline
       - sympy==1.14.0
       - threadpoolctl==3.6.0
       - tifffile==2026.5.15
