@@ -1,4 +1,12 @@
 #!/usr/bin/env python3
+"""
+LEGACY -- predecessor to theo_pipeline_new.py. Superseded: theo_pipeline_new.py
+is a strict superset (per-model hyperparameter flags, the per-fold LagMat
+leakage fix, --window-before/--window-after in SECONDS replacing
+--bin-before/--bin-after, SLURM-array batch mode). Nothing imports this and its
+only paired analysis notebook (theo_pipeline_analysis.ipynb) is also legacy.
+Kept for reference. Use theo_pipeline_new.py via run_theo_pipeline_raven.sh.
+"""
 
 import sys
 

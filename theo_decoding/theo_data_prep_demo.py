@@ -1,4 +1,8 @@
-"""Full data-loading + preprocessing pipeline for the GLC7189/c_g0 texture
+"""SUPPLEMENTARY / reference -- not run as part of a search. A standalone,
+readable extract of just the data-prep half of theo_pipeline_new.py, for
+understanding or reusing that stage on its own.
+
+Full data-loading + preprocessing pipeline for the GLC7189/c_g0 texture
 decoding search: raw recording/peaks -> lagged feature matrix
 (X_lagged_search / y_search) ready for a decoder to train on. This is
 everything theo_pipeline_new.py's main() does up to (not including)

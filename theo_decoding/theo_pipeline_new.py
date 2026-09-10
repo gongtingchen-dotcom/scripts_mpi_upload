@@ -1,4 +1,45 @@
 #!/usr/bin/env python3
+"""
+theo_pipeline_new.py -- THE current decoder. One invocation = one hyperparameter
+point. Run it via run_theo_pipeline_raven.sh (manual single run, or SLURM-array
+batch); the batch grid is built by build_search_grid.py and submitted by
+submit_search.sh, and results are analysed in analyze_param_search.ipynb.
+
+WHAT IT DOES (see main()):
+  1. Load recording + threshold-crossing peaks; drift-correct each peak's depth
+     with the DREDge motion estimate, snap to nearest channel (unless
+     --skip-drift-correction).
+  2. Bin per-channel MUA into dt-second bins -> X (n_bins, n_channels); bin the
+     chosen behaviour PCs onto the same grid -> y. Trim to the neural/behaviour
+     overlap window.
+  3. KFold(shuffle=False) CV. LagMat is applied PER FOLD, after the split (the
+     leakage fix -- an earlier version lagged once globally, letting boundary
+     rows borrow data from across a fold edge). Window sizes are in SECONDS
+     (--window-before/--window-after), converted to round(window/dt) bins.
+  4. Per fold, per model in --models: fit (target demean/zscore fit on train
+     only), predict held-out fold, score with sklearn r2_score.
+  5. Optional --runtime-abort-budget-hours tripwire: after fold 2, project total
+     time and exit early (code 75) rather than burn a doomed SLURM allocation.
+
+USAGE:
+  bash run_theo_pipeline_raven.sh --models WC --wc-degree 2 --recording-path ... \
+      (all dataset flags explicit -- see build_search_grid.py's FIXED_ARGS)
+  # or as a search: build_search_grid.py -> submit_search.sh search_manifest.tsv
+
+PARAMETERS: see build_parser() below. Key ones: --models (WF/WC/SVR/XGB/FNN/
+RNN/GRU/LSTM), --dt, --window-before/--window-after (seconds), --n-splits,
+--pc-cols, --spike-thresh / --channel-smooth-window (feature-count levers for
+overfitting), plus per-model hyperparams (--svr-c, --xgb-*, --wc-degree, ...).
+
+OUTPUTS, under <output-root>/<timestamp>_<tag>/ (one dir per run):
+  run_params.json    -- full config + package versions + git info (written at start;
+                        build_search_grid.py's dedup keys on this file's existence)
+  cv_summary.json    -- per-fold per-PC R2 + config (what analyze_param_search.ipynb reads)
+  models/<model>_fold<i>.joblib      -- fitted model per fold
+  predictions/<model>_oof_predictions.npz  -- out-of-fold predictions
+  figures/           -- drift scatter, firing-rate heatmap, decoded-vs-observed,
+                        residuals, XGB loss/importance, train-vs-test R2, ...
+"""
 
 import sys
 

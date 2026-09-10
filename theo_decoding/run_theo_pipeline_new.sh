@@ -1,4 +1,9 @@
 #!/bin/bash -l
+# LEGACY -- the older "run locally" wrapper for theo_pipeline_new.py. Targets
+# /gpfs/laur paths (not mounted on Raven) and still passes --background /
+# --bin-before / --bin-after, which theo_pipeline_new.py no longer accepts
+# (it migrated to --window-before / --window-after in SECONDS). Superseded by
+# run_theo_pipeline_raven.sh, which is the maintained wrapper.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

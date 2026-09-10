@@ -113,6 +113,14 @@ pipeline.
   (`--shuffle shift/scramble`); `shuffle_analysis.py` compares the two.
 - Everything else: supplementary tools or legacy, see folder README.
 
-## 7. Theo_decoding (not yet documented in this cleanup pass)
+## 7. Channel-MUA decoding (`theo_decoding/`) — [full detail](theo_decoding/README.md)
 
-- `theo_decoding/` — decodes behaviour from peaks grouped by channel/depth; main entry `theo_pipeline_new.py`.
+Decode behaviour (texture PCs) from channel-wise MUA (drift-corrected peaks binned
+per channel, lagged, K-fold CV). Run as a hyperparameter search.
+- **`build_search_grid.py`** — writes the run manifest (edit `GRID`/`FIXED_ARGS`);
+  pass `--search-root .../theo_pipeline_params_search_lagfixed` for correct numbers.
+- **`submit_search.sh`** — batch-submits the manifest to SLURM under the MaxSubmit cap.
+- **`run_theo_pipeline_raven.sh` + `theo_pipeline_new.py`** — the decoder itself
+  (one invocation = one hyperparameter point).
+- **`analyze_param_search.ipynb`** — scans all finished runs → leaderboard + plots.
+- Everything else: supplementary tools or legacy, see folder README.

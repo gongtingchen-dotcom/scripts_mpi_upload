@@ -1,4 +1,7 @@
 #!/bin/bash -l
+# LEGACY -- wrapper for theo_decode_cv.py (itself legacy; see its header).
+# Also targets /gpfs/laur data paths not mounted on Raven. Superseded by
+# run_theo_pipeline_raven.sh + theo_pipeline_new.py.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -104,7 +107,7 @@ send_mail_msg "[theo_decode_cv] BEGIN" "Run started on $(hostname).\nLog: ${LOG_
 
 PYTHON=${PYTHON_PATH:-$(which python)}
 
-$PYTHON /gpfs/laur/personal/gongt/scripts/theo_decoding/theo_decode_cv.py \
+$PYTHON "${SCRIPT_DIR}/theo_decode_cv.py" \
   --recording-path /gpfs/laur/data/0_collaboration/ceph_phys/GLC6962/GLC6962_g_g0/preprocessed \
   --peaks-path /gpfs/laur/data/0_collaboration/ceph_phys/GLC6962/GLC6962_g_g0/preprocessed/thresholding_peaks_3.5/peaks_combined2_sorted.npy \
   --behavior-df-path /gpfs/laur/data/0_collaboration/sepia_filming/sepia_processed/ceph_analysis_dfs/GLC6633-6644-6811-6962-20260223/texture_pca_df_preproc.pkl \

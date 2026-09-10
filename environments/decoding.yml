@@ -70,7 +70,7 @@ dependencies:
       - neo==0.14.5
       - nest-asyncio2==1.7.2
       - networkx==3.6.1
-      - neural-decoding==2.2.0.post2+git.7dfa974a
+      - Neural_Decoding @ git+https://github.com/theowoo/Neural_Decoding_sklearn.git@7dfa974a325f0eadc65aa7e6cec56d7acdcee2e1
       - numcodecs==0.15.1
       - numpy==2.5.1
       - nvidia-cublas==13.1.1.3

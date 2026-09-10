@@ -1,6 +1,8 @@
 # %%
 
-"""Same load + preprocess pipeline as theo_pipeline_new.py / theo_data_prep_demo.py
+"""SUPPLEMENTARY analysis tool -- not run as part of a search.
+
+Same load + preprocess pipeline as theo_pipeline_new.py / theo_data_prep_demo.py
 (GLC7189/c_g0, with the full set of diagnostic QC plots restored), plus two
 extra analysis steps:
 

@@ -109,6 +109,12 @@ fi
 # experiment defaults -- those live in build_search_grid.py's FIXED_ARGS,
 # baked into every manifest row already for array mode, and must be passed
 # explicitly for a manual run.
+#
+# In array mode OUTPUT_ROOT is overridden to the manifest's own directory
+# (above). The default below is only used for a bare manual run, and points
+# at the ORIGINAL (pre-leakage-fix) search folder -- for correct numbers,
+# pass OUTPUT_ROOT=.../theo_pipeline_params_search_lagfixed  (see
+# build_search_grid.py's SEARCH_ROOT note).
 OUTPUT_ROOT="${OUTPUT_ROOT:-/nexus/posix0/MBR-neuralsystems/ephys/GLC7189/GLC7189_c_g0/theo_pipeline_params_search}"
 LOG_DIR="${OUTPUT_ROOT}/logs"
 mkdir -p "${LOG_DIR}"

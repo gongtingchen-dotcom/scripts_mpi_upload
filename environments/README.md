@@ -11,7 +11,7 @@ script uses which env is always stated at the top of that script's `.sh` wrapper
 | `phy2` | `sorters/` (KS4/IronClust/MountainSort5), `tomato/`'s legacy `compute_in_si.py` |
 | `slay` | `tomato/`'s auto-merging scripts (`try_merge_selfdbuild_cleaned.py`, `try_merge_step_2.py`) |
 | `density_decoding` | `density_decoding/` |
-| `decoding` | `theo_decoding/` |
+| `decoding` | `theo_decoding/` (needs `Neural_Decoding`, see below) |
 
 ## Setup
 
@@ -46,6 +46,15 @@ remote**:
   numpy-compatibility fixes (`ndarray.ptp()` → `np.ptp()`) committed on top.
   Repo: `git@gitlab.mpcdf.mpg.de:mpibr/laur/spikes_localization_registration_gongt.git`.
   Legacy/not part of the main pipeline (see `peak_detect_localise/README.md`).
+
+## One more non-PyPI dependency
+
+- **`Neural_Decoding`** (used by the `decoding` env — `theo_decoding/`'s
+  `theo_pipeline_new.py` imports `LagMat`, `bin_spikes`, `WienerCascade`, the
+  RNN/GRU/LSTM wrappers from it) is Theo Woo's fork of Josh Glaser's package,
+  not on PyPI. Not modified by us — a plain non-editable git install. Already in
+  `decoding.yml` as `git+https://github.com/theowoo/Neural_Decoding_sklearn.git@<commit>`,
+  so `conda env create` installs it automatically.
 
 ## One environment needs a one-line hand-edit after install
 

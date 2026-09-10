@@ -32,6 +32,18 @@ targets can never safely share one manifest file.
 Edit GRID / FIXED_ARGS / the sweep constants below to change what's
 searched -- they're the single source of truth, and are copied into
 search_manifest.json alongside the manifest for the record.
+
+Row order in the manifest follows ALL_MODELS x section order as written below
+(WC, SVR, XGB, FNN, RNN, GRU, LSTM, WF). Standing practice on this project is
+to submit cheap jobs first so expensive/doomed combos (small --dt, big
+--window, many --n-splits -- especially SVR/XGB) surface late and can be
+cancelled with little wasted compute; reorder ALL_MODELS / the sweep lists,
+or split into separate --manifest-name batches, if you want that enforced.
+
+OUTPUTS (in SEARCH_ROOT):
+  <manifest-name>.tsv   -- one theo_pipeline_new.py arg-string per line; fed to
+                           submit_search.sh, read line-by-line by run_theo_pipeline_raven.sh
+  <manifest-name>.json  -- the GRID/FIXED_ARGS/sweep constants used, for the record
 """
 
 import argparse
@@ -39,6 +51,14 @@ import itertools
 import json
 from pathlib import Path
 
+# NOTE: this default is the ORIGINAL search folder, whose R2 numbers are
+# inflated by the train/test lag-window leakage bug fixed 2026-08-16 (LagMat
+# was applied once globally before the CV split; now per-fold). Post-fix work
+# uses a SEPARATE folder so dedup can't confuse a leaky run with a correct one
+# of the same hyperparameters -- pass:
+#   python build_search_grid.py --search-root \
+#     /nexus/posix0/MBR-neuralsystems/ephys/GLC7189/GLC7189_c_g0/theo_pipeline_params_search_lagfixed
+# (build_search_grid_lagfixed_batch2.py already points at the lagfixed folder.)
 SEARCH_ROOT = Path("/nexus/posix0/MBR-neuralsystems/ephys/GLC7189/GLC7189_c_g0/theo_pipeline_params_search")
 RESULTS_ROOT = SEARCH_ROOT / "results"
 
