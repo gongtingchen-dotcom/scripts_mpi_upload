@@ -98,11 +98,22 @@ import shutil
 import signal
 import sys
 import time
+import traceback
 from datetime import datetime
+from importlib.metadata import version as _importlib_version
 from pathlib import Path
 
 import numpy as np
 import spikeinterface.full as si
+from spikeinterface.core.core_tools import check_json
+
+# Populated inside main() as soon as the relevant values exist, so the
+# top-level error handler (see bottom of file) can still write a
+# spikeinterface_log.json with error=True if a stage raises — mirrors what
+# spikeinterface.sorters.basesorter.BaseSorter.run_from_folder does on
+# failure, without having to wrap the whole multi-stage body in one giant
+# try/except.
+_SI_BOOKKEEPING_CTX = {}
 
 
 # --------------------------------------------------------------------------- #
@@ -163,6 +174,34 @@ def str2bool(v):
     if v.lower() in ('no', 'false', 'f', 'n', '0'):
         return False
     raise argparse.ArgumentTypeError('Boolean value expected.')
+
+
+def _write_si_log_json(output_folder, sorter_output, sorter_version,
+                        error, error_trace, run_time):
+    """spikeinterface_log.json, matching BaseSorter.run_from_folder.
+
+    Lets si.read_sorter_result() / si.get_result_from_folder() work on
+    ks4_checkpoint.py's output the same as it does on plain KS4.py's
+    (si.run_sorter) output.
+    """
+    runtime_trace = []
+    runtime_trace_path = Path(sorter_output) / "kilosort4.log"
+    if runtime_trace_path.is_file():
+        with open(runtime_trace_path, "r") as fp:
+            runtime_trace = [line.strip() for line in fp]
+    log = {
+        "sorter_name": "kilosort4",
+        "sorter_version": str(sorter_version),
+        "datetime": datetime.now(),
+        "runtime_trace": runtime_trace,
+        "error": bool(error),
+        "run_time": run_time,
+    }
+    if error_trace is not None:
+        log["error_trace"] = error_trace
+    with (Path(output_folder) / "spikeinterface_log.json").open(
+            "w", encoding="utf8") as f:
+        json.dump(check_json(log), f, indent=4)
 
 
 # --------------------------------------------------------------------------- #
@@ -659,6 +698,8 @@ def main():
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     sorter_output = output_folder / "sorter_output"
     sorter_output.mkdir(parents=True, exist_ok=True)
+    _SI_BOOKKEEPING_CTX["output_folder"] = output_folder
+    _SI_BOOKKEEPING_CTX["sorter_output"] = sorter_output
 
     progress = StageLog(ckpt_dir)
     progress.state["kilosort_version"] = getattr(kilosort, "__version__", "unknown")
@@ -710,6 +751,19 @@ def main():
         print(f"Cleaving data {time_start}s..{time_end}s "
               f"({start_frame}-{end_frame})")
         rec = rec.frame_slice(start_frame=start_frame, end_frame=end_frame)
+
+    # Write spikeinterface_recording.json (or .pickle fallback), matching
+    # BaseSorter.initialize_folder — lets si.read_sorter_result() / other SI
+    # tooling that expects this file work on ks4_checkpoint.py output too.
+    rec_json_file = output_folder / "spikeinterface_recording.json"
+    if rec.check_serializability("json"):
+        rec.dump(rec_json_file)
+    elif rec.check_serializability("pickle"):
+        rec.dump(output_folder / "spikeinterface_recording.pickle",
+                  relative_to=output_folder)
+    else:
+        print("[checkpoint] warning: recording not json/pickle serializable, "
+              "skipping spikeinterface_recording.json")
 
     # ------------------------------------------------------------------ #
     # 2. Probe + binary handling, matching SI's kilosort4 wrapper.
@@ -811,6 +865,13 @@ def main():
         f.write("Parameters:\n")
         for key, value in current_ks_params.items():
             f.write(f"{key}: {value}\n")
+
+    # spikeinterface_params.json, matching BaseSorter._dump_params.
+    _SI_BOOKKEEPING_CTX["sorter_params"] = current_ks_params
+    all_params = {"sorter_name": "kilosort4", "sorter_params": current_ks_params}
+    with (output_folder / "spikeinterface_params.json").open(
+            mode="w", encoding="utf8") as f:
+        json.dump(check_json(all_params), f, indent=4)
 
     tic0 = time.time()
 
@@ -1106,6 +1167,40 @@ def main():
           f"{progress.state['slurm_restart_count']}")
     print(f"[checkpoint] sorter output: {sorter_output}")
 
+    # spikeinterface_log.json, matching BaseSorter.run_from_folder's success
+    # path (only reached here if no stage exited early for SLURM requeue —
+    # see the module-level error handler below for the failure path).
+    _write_si_log_json(
+        output_folder=output_folder, sorter_output=sorter_output,
+        sorter_version=_importlib_version("kilosort"), error=False,
+        error_trace=None, run_time=runtime,
+    )
+
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception:
+        # Genuine failure (not the SIGUSR1/checkpoint SystemExit(75) requeue
+        # path, which is a BaseException and so isn't caught here). Write
+        # spikeinterface_log.json with error=True before re-raising, matching
+        # BaseSorter.run_from_folder's failure path, so SI tooling that reads
+        # that file to check for errors sees a real (not missing) log.
+        _output_folder = _SI_BOOKKEEPING_CTX.get("output_folder")
+        _sorter_output = _SI_BOOKKEEPING_CTX.get("sorter_output")
+        if _output_folder is not None and _sorter_output is not None:
+            _error_trace_lines = traceback.format_exc().strip().split("\n")
+            _error_to_json = ["Traceback (most recent call last):"] + [
+                f"  {l}" if not l.startswith(" ") else l
+                for l in _error_trace_lines[1:]
+            ]
+            try:
+                _sv = _importlib_version("kilosort")
+            except Exception:
+                _sv = "unknown"
+            _write_si_log_json(
+                output_folder=_output_folder, sorter_output=_sorter_output,
+                sorter_version=_sv, error=True,
+                error_trace=_error_to_json, run_time=None,
+            )
+        raise
