@@ -2,6 +2,7 @@ density_decoding/slurm/
 motion/slurm/
 peak_detect_localise/slurm/
 preprocess/slurm/
+sorters/slurm/
 tomato/slurm/
 theo_decoding/slurm/
 theo_decoding/Decoding_data/

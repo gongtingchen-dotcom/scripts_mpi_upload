@@ -68,8 +68,8 @@ Raw recording → cleaned, bad channel-removed, artifact-removed, rescaled recor
 ## 2. Spike sorting (`sorters/`) — [full detail](sorters/README.md)
 
 Preprocessed recording → sorted single units (Phy-compatible).
-- **`run_ks4_checkpoint.sh` + `ks4_checkpoint.py`** — Kilosort4, recommended choice (survives past the 24h SLURM limit).
-- `run_ks4.sh` + `KS4.py` — same, no checkpointing, so will be automatically killed if runs for more than 24h on SLURM
+- **`run_ks4_checkpoint.sh` + `ks4_checkpoint.py`** — Kilosort4 with stage-level checkpointing + auto SLURM-requeue; a good default, and resumes a long sort that doesn't fit in one 24h allocation.
+- `run_ks4.sh` + `KS4.py` — plain Kilosort4, same pipeline/output, no checkpointing. Fine to use; a sort exceeding 24h is lost rather than resumed.
 - `run_IC.sh` + `ironclust.py`, `run_ms5.sh` + `ms5.py` — IronClust / MountainSort5, legacy scripts, run for comparison against Kilosort4.
 - `matlab_test.sh` — unrelated GPU sanity check to test whether matlab is working for IC, not part of sorting.
 - `customised_KS4.py` — legacy: fed our own detected spikes into KS4's clustering, results were poor.

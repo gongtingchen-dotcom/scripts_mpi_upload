@@ -4,10 +4,11 @@
 # layout as ks4_checkpoint.py (see that script's header for usage examples,
 # parameter tuning guidance, and what gets written where — all of it applies
 # here unchanged), just without the checkpoint/SLURM-requeue machinery.
-# Usable, but the job will simply die if it doesn't finish inside one 24h
-# SLURM allocation. Prefer ks4_checkpoint.py (run_ks4_checkpoint.sh) instead
-# unless you have a specific reason not to — it does everything this does,
-# plus survives the walltime limit.
+# Perfectly fine to use. The only practical difference: if the sort doesn't
+# finish inside one 24h SLURM allocation, this one is lost at the walltime
+# cap, whereas ks4_checkpoint.py resumes from its last completed stage. For
+# short/medium recordings that comfortably fit in 24h, either works; for long
+# recordings, ks4_checkpoint.py (run_ks4_checkpoint.sh) is the safer pick.
 
 # %%
 import os

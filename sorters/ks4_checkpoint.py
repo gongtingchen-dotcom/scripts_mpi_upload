@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """Kilosort 4 driver with stage-level checkpointing + SLURM USR1 requeue.
 
-USE THIS ONE, especially if concerned about the 24hr time limit. 
-Run via run_ks4_checkpoint.sh. Specifically needed for
-recordings long enough that sorting won't finish inside a single 24h SLURM
-allocation — the job checkpoints itself and gets requeued automatically
-instead of dying at walltime. For short recordings the checkpointing is
-just a no-op safety net, so there's no real downside to defaulting to this
-for everything rather than using plain KS4.py.
+A good default. Run via run_ks4_checkpoint.sh. Same pipeline and output as
+plain KS4.py; the addition is that the job checkpoints itself and gets
+SLURM-requeued automatically, resuming from its last completed stage instead
+of dying at walltime. That matters for recordings long enough that sorting
+won't finish inside a single 24h SLURM allocation; on shorter recordings the
+checkpointing is just a no-op safety net, so it's fine to use for everything.
+KS4.py is equally fine when you don't need the resume behaviour.
 
 Drop-in replacement for KS4.py. Same CLI. Differences:
   * Output folder is NOT wiped if a checkpoint marker is present; the run

@@ -19,14 +19,14 @@ clusters) preserved.
 
 ## Main pipeline
 
-- **`run_ks4_checkpoint.sh` + `ks4_checkpoint.py`** — Kilosort4, the recommended default. Checkpoints itself and gets SLURM-requeued automatically, so it survives past the 24h walltime on long recordings (harmless no-op on short ones). also takes down relevant data along every step of kilosort, useful for troubleshooting. 
+- **`run_ks4_checkpoint.sh` + `ks4_checkpoint.py`** — Kilosort4. Same pipeline and output as `KS4.py`, plus stage-level checkpointing: it gets SLURM-requeued automatically and resumes from its last completed stage, so a long sort that doesn't fit in one 24h allocation isn't lost. On short/medium recordings the checkpointing is just a harmless safety net. Also saves KS4's intermediate data at every stage, which is handy for troubleshooting. A reasonable default for everything; particularly worth it for long recordings. 
   - **Usage:** `sbatch run_ks4_checkpoint.sh --root_folder <session dir> --data_folder <session dir>/preprocessed [kilosort params...]`
   - **Parameters:** every `kilosort4` param from `si.get_default_sorter_params('kilosort4')` is a CLI flag. Commonly tuned: `--nblocks` (drift-correction blocks; 0 disables), `--Th_universal`/`--Th_learned` (detection thresholds), `--whitening_range` (preprocessing spatial extent), `--n_pcs`/`--nearest_chans` (pcs for clustering), etc. 
   - **Outputs**, under `<root_folder>/KS4/<run_name>/` (`run_name` auto-encodes changed params): `sorter_output/` (Phy-compatible spike times/clusters/templates/`ops.npy`), `kilosort_params.txt` (exact params used).
 
 ## Supplementary
 
-- **`run_ks4.sh` + `KS4.py`** — same pipeline as above, no checkpointing (job dies if it exceeds 24h). 
+- **`run_ks4.sh` + `KS4.py`** — plain Kilosort4, same CLI/parameters/output as `ks4_checkpoint.py`, just without the checkpoint/requeue machinery. Perfectly fine to use; the only catch is that a sort exceeding the 24h walltime is lost rather than resumed. 
 - **`run_IC.sh` + `ironclust.py`** — IronClust, an alternative sorter, run for comparison against Kilosort4. No CLI — edit `root_folder`/`data_folder` in the file. Output: `<root_folder>/IC_test/` (`sorter_output/`, `si_analyzer/`, `export_to_phy/`). Note: the export_to_phy function for IronClust may have been changed / depreciated, see spikeinterface github for more info. 
 - **`run_ms5.sh` + `ms5.py`** — MountainSort5, another comparison sorter. CLI: `--root_folder`/`--data_folder` + MountainSort5's own two-phase detection params (see script header). Output: `<root_folder>/ms5_<run_name>/`.
 - **`matlab_test.sh`** — unrelated one-off: checks MATLAB can see the GPU on this cluster. Not part of sorting. Useful if need to use IronClust on Raven. 
@@ -39,4 +39,5 @@ clusters) preserved.
 
 ## Recommended practice
 
-Default to `ks4_checkpoint.py`. 
+Either KS4 script is fine. `ks4_checkpoint.py` is a good default — the checkpointing
+costs nothing on short runs and saves a long run from being lost at the walltime cap.
