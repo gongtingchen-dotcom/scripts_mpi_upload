@@ -1,11 +1,25 @@
 #!/usr/bin/env python3
-"""Checks whether theo_pipeline_new.py's saved per-fold R2 (fold_r2_raw_values
-in cv_summary.json) was recorded correctly, by loading each fold's ALREADY-
-FITTED model (models/<model>_fold<i>.joblib -- no retraining at all) and
-independently recomputing R2 on that same fold's held-out predictions with
-sklearn's own r2_score -- the function scikit's "r2" scoring string resolves
-to under the hood, same as
+"""Confirms theo_pipeline_new.py's saved per-fold R2 is arithmetically correct,
+by loading each fold's ALREADY-FITTED model (models/<model>_fold<i>.joblib --
+no retraining at all) and independently recomputing R2 on that same fold's
+held-out predictions with sklearn's own r2_score -- the function scikit's "r2"
+scoring string resolves to under the hood, same as
 /raven/u/gongt/Neural_Decoding_sklearn/Examples_sklearn_cross_validation.ipynb.
+
+RESULT: on the runs checked, the recomputed values match exactly (to float
+tolerance). So the number the pipeline records IS a real sklearn r2_score on
+held-out data -- not a bug or a nonstandard formula.
+
+WHICH pipeline number this validates, precisely:
+  cv_summary.json -> models -> <model> -> fold_r2_raw_values[fold][pc]
+  i.e. the PER-FOLD, PER-PC held-out R2, each computed as
+  r2_score(y_search[test_idx], pred, multioutput="raw_values").
+Directly implied (it's just the fold-axis mean of the above):
+  mean_fold_r2_per_output[pc].
+NOT checked here -- different quantities:
+  oof_r2_per_output[pc]  -- r2_score over ALL out-of-fold predictions pooled
+                            into one array at once (not a mean of per-fold R2).
+  holdout_r2_per_output[pc]  -- the reserved chronological holdout block.
 
 This does NOT retrain anything: it's a pure re-scoring check, isolating the
 R2 arithmetic from any question about whether refitting the model a second

@@ -2,9 +2,9 @@
 
 """SUPPLEMENTARY analysis tool -- not run as part of a search.
 
-Same load + preprocess pipeline as theo_pipeline_new.py / theo_data_prep_demo.py
-(GLC7189/c_g0, with the full set of diagnostic QC plots restored), plus two
-extra analysis steps:
+Roughly the same load + preprocess pipeline as theo_pipeline_new.py /
+theo_data_prep_demo.py (GLC7189/c_g0, full diagnostic QC plots restored), plus
+two extra analysis steps:
 
   1. PCA on the binned per-channel firing rates (X) -> top 50 neural PCs,
      saved to disk.
@@ -13,6 +13,24 @@ extra analysis steps:
      binned firing-rate heatmap, and the first 3 neural PCs from step 1 --
      all sharing one time axis, with the CV fold boundaries marked on every
      panel.
+
+ONE DELIBERATE DIFFERENCE FROM theo_pipeline_new.py -- the neural<->behaviour
+time alignment:
+  - theo_pipeline_new.py puts EVERYTHING on one clock: the absolute
+    rec.get_times() clock. peak_times_sec = sample_index/fs + time_offset,
+    and t_start/t_end (the neural/behaviour overlap trim) are computed on that
+    same clock, as is the DREDge motion lookup.
+  - This script splits into two: alignment/binning against behaviour uses a
+    NEURAL-ZEROED clock (peak sample_index/fs, no time_offset), while the
+    motion lookup keeps the absolute clock (peak_times_motion). So relative to
+    theo_pipeline_new.py, the neural stream here is shifted earlier by
+    time_offset (~4.3s for this recording) before being trimmed/binned
+    against behaviour.
+  The drift-correction step itself (get_corrected_positions +
+  snap_to_nearest_channel, fed the absolute-clock times) is identical in both.
+  Which alignment is right depends on the behaviour df's `time` clock
+  convention -- unresolved; the two scripts genuinely disagree here, so don't
+  treat this one's numbers as a faithful reproduction of the main pipeline's.
 
 See theo_pipeline_new.py for the general, CLI-configurable version.
 """

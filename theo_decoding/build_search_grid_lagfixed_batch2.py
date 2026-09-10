@@ -7,6 +7,27 @@ build_search_grid.py's pipeline_sweep_rows -- this batch's ranges genuinely
 differ per model, e.g. GRU/LSTM go down to dt=0.1 and up to window=128,
 RNN only goes up to window=8).
 
+HOW THIS DIFFERS FROM build_search_grid.py (run first, on the same lagfixed
+folder, producing search_manifest.tsv):
+  - Scope: build_search_grid.py runs the full per-model hyperparameter GRID
+    (wc-degree, svr-c x max-iter, xgb depth/estimators/lr, nn units/dropout/
+    epochs/layers, ...) PLUS a coarse shared dt/window/n_splits sweep PLUS
+    spike-thresh + SVR output-preprocess sweeps. This script does ONLY
+    dt x window x n_splits (+ wc-degree for WC), each model at its default
+    hyperparameters -- a deeper look at just the pipeline axes after the
+    first pass showed which regions were worth more resolution.
+  - Axis ranges: build_search_grid.py uses one DT_VALUES / WINDOW_VALUES /
+    N_SPLITS_VALUES list for every model; here each model gets its own three
+    lists (MODEL_SWEEPS below).
+  - Validity filtering: this script drops rows that can't yield a real score
+    -- zero-lag (round(window/dt) < 1) and test-fold-mostly-zero-padded --
+    and records them separately. build_search_grid.py has neither filter and
+    would just submit those.
+  - Ordering: this script sorts rows fast-model-first then by a cost proxy;
+    build_search_grid.py writes them in GRID/section order.
+  - Both write to the SAME lagfixed results/ and share build_search_grid.py's
+    dedup, so a row already covered by search_manifest.tsv is skipped here.
+
 Reuses build_search_grid.py's dedup/formatting machinery as a library
 (FIXED_ARGS, format_row, drop_already_done, existing_configs) rather than
 forking it, so a row here that's already in results/ -- from the original

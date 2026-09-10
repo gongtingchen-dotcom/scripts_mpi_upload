@@ -56,21 +56,31 @@ not on PyPI) — already wired into `decoding.yml` as a git install. See
   runtime exceeds the budget. Covers jobs that started before
   `theo_pipeline_new.py`'s own in-process `--runtime-abort-budget-hours` tripwire
   existed. `nohup python monitor_runtime_budget.py &  disown`.
-- **`build_search_grid_lagfixed_batch2.py`** — a second, targeted sweep against
-  the lagfixed folder with **per-model** dt/window/n_splits lists (imports
-  `build_search_grid.py` as a library, shares its dedup). Template for future
-  targeted sweeps.
+- **`build_search_grid_lagfixed_batch2.py`** — a second, deeper sweep run on top
+  of `build_search_grid.py`'s first pass. Difference from `build_search_grid.py`:
+  it varies **only** dt × window × n_splits (not the per-model hyperparameter
+  grids), with a **per-model** range for each of those three axes (GRU/LSTM down
+  to dt=0.1 and up to window=128; RNN capped at window=8; etc.) instead of one
+  shared list; and it drops combinations that can't produce a real score
+  (window/dt < 1 lag bin; test fold mostly inside the LagMat zero-padded zone),
+  which `build_search_grid.py` does not filter. Imports `build_search_grid.py` as
+  a library so dedup/formatting stay identical. Both manifests coexist in the
+  lagfixed folder and feed the same `results/`.
 - **`channel_selection.ipynb`** — investigates dropping low-spike channels to
   fight XGB overfitting (feeds `--spike-thresh` / `--channel-smooth-window`).
 - **`compare_neural_behaviour.py`** — same load/preprocess + PCA on the binned
-  firing rates + a time-aligned neural-vs-behaviour comparison figure.
+  firing rates + a time-aligned neural-vs-behaviour comparison figure. **Note:**
+  its neural↔behaviour alignment is NOT identical to the main pipeline's — it
+  aligns on a neural-zeroed clock (peak `sample_index/fs`, no `time_offset`),
+  whereas `theo_pipeline_new.py` aligns on the absolute `rec.get_times()` clock
+  (`+ time_offset`, ~4.3s here). The drift-correction step itself is the same in
+  both. See the script header.
 - **`theo_data_prep_demo.py`** — standalone readable extract of just the
   data-prep half of `theo_pipeline_new.py` (raw → lagged X/y). Onboarding aid.
-- **`test_r2_method.py`** — re-scores saved per-fold predictions with sklearn
-  `r2_score` (no retrain); checks the R² arithmetic in `cv_summary.json`.
-- **`test_pipeline_method.py`** — refits the fastest WF/WC runs using Theo's
-  exact notebook pipeline order (scale→lag→model, no y-preprocessing) to
-  quantify how much her specific choices move R².
+- **`test_r2_method.py`** — confirms the main pipeline's held-out R² arithmetic
+  is correct: reloads each fold's fitted model (no retrain), recomputes
+  `sklearn.r2_score(y_test, pred, multioutput="raw_values")`, checks it matches
+  `cv_summary.json`'s `models.<model>.fold_r2_raw_values[fold][pc]`.
 
 ## Legacy / reference
 

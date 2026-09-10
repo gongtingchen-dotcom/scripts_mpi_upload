@@ -5,6 +5,13 @@ search: one line per run, each line a complete, standalone set of CLI args
 run_theo_pipeline_raven.sh just forwards a line verbatim -- it knows nothing
 about datasets or defaults.
 
+This is the BROAD first pass: every model's full hyperparameter GRID, plus a
+coarse shared dt/window/n_splits sweep, plus spike-thresh and SVR
+output-preprocess sweeps. build_search_grid_lagfixed_batch2.py is the
+follow-up deeper pass (dt x window x n_splits only, per-model ranges, with
+validity filtering); it imports this module and writes a separate manifest
+into the same results/ folder. See its docstring for the full contrast.
+
 Always scans <SEARCH_ROOT>/results/ and drops any row that's already been
 run OR is currently running (any run dir with a run_params.json counts --
 that file is written right at the start of a run, long before it finishes).
