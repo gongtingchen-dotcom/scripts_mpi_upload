@@ -67,30 +67,33 @@ PYTHON=${PYTHON_PATH:-$(which python)}
 # Wait on it; if it exits 0 with a partial-progress sentinel file present,
 # SLURM's --requeue will put the job back in the queue when we exit.
 "$PYTHON" /u/gongt/scripts/sorters/ks4_checkpoint.py \
-    --root_folder /ptmp/gongt/GLC6962_l_g1 \
-    --data_folder /ptmp/gongt/GLC6962_l_g1/preprocessed \
-    --nblocks 10 \
+    --root_folder /nexus/posix0/MBR-neuralsystems/ephys/GLC6962/GLC6962_q_g0 \
+    --data_folder /nexus/posix0/MBR-neuralsystems/ephys/GLC6962/GLC6962_q_g0/preprocessed \
+    --nblocks 1 \
     --Th_universal 9 \
     --Th_learned 8 \
     --whitening_range 32 \
-    --nearest_chans 10 \
+    --nt0min 20 \
+    --nearest_chans 64 \
     --min_template_size 10 \
     --template_sizes 5 \
+    --nearest_templates 100 \
+    --max_channel_distance 32 \
     --templates_from_data True \
     --n_templates 6 \
     --n_pcs 6 \
     --Th_single_ch 6 \
-    --acg_threshold 0.1 \
-    --ccg_threshold 0.05 \
-    --cluster_downsampling 2 \
+    --acg_threshold 1.0 \
+    --ccg_threshold 1.5 \
+    --cluster_downsampling 1 \
     --cluster_neighbors 10 \
     --do_CAR False \
-    --n_jobs 36 \
-    --save_preprocessed_copy False \
-    --max_threads_per_worker 8 \
-    --clear_cache True \
+    --n_jobs -1 \
+    --save_preprocessed_copy True \
+    --max_threads_per_worker 4 \
+    --clear_cache False \
     --skip_kilosort_preprocessing False \
-    --delete_recording_dat False &
+    --delete_recording_dat True &
 
 PYPID=$!
 # Loop on wait: in bash, wait returns early (with 128+signum) when a signal
