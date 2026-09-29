@@ -117,8 +117,8 @@ pipeline.
 
 Decode behaviour (texture PCs) from channel-wise MUA (drift-corrected peaks binned
 per channel, lagged, K-fold CV). Run as a hyperparameter search.
-- **`build_search_grid.py`** — writes the run manifest (edit `GRID`/`FIXED_ARGS`);
-  pass `--search-root .../theo_pipeline_params_search_lagfixed` for correct numbers.
+- **`build_search_grid.py`** — writes the run manifest (edit `SWEEPS`/`ACTIVE_BLOCKS`/`FIXED_ARGS`);
+  defaults to the current `theo_pipeline_params_search_aligned` results folder.
 - **`submit_search.sh`** — batch-submits the manifest to SLURM under the MaxSubmit cap.
 - **`run_theo_pipeline_raven.sh` + `theo_pipeline_new.py`** — the decoder itself
   (one invocation = one hyperparameter point).

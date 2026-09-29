@@ -1,25 +1,15 @@
 #!/bin/bash -l
+# 
+# runs as a long-lived background process; 
+# this script submits run_theo_pipeline_raven.sh 
+# 
 # Submits every row of a search manifest as a sequence of SLURM array jobs,
-# sized to stay under this account's MaxSubmit=300 cap, without needing a
-# human to babysit or a one-off watcher script per round (see git history --
-# this used to be run_theo_pipeline_search_array_raven_{cpu,gpu}.sh plus
-# wait_and_submit_gpu_array.sh; one script now covers what those three did).
-#
-# Submits BATCH_SIZE rows at a time (as one array job, throttled to
-# CONCURRENCY running at once); once this script's own outstanding
-# (PENDING+RUNNING) task count drops below RESUBMIT_THRESHOLD, it submits
-# the next batch. Runs until the whole manifest is submitted, then exits --
-# it does not wait for the last batch to finish.
-#
+# sized to stay under this account's MaxSubmit=300 cap. 
+# 
 # Usage: nohup ./submit_search.sh <manifest.tsv> > submit_search.log 2>&1 &
 #        disown
 #
-# Safe to re-run on the same manifest: re-generate it with build_search_grid.py
-# first (which skips anything already in results/), so a rerun only ever
-# resubmits genuinely new rows. Don't regenerate the manifest while a batch
-# from a previous call is still outstanding -- rows queued but not yet
-# started have no results/ entry yet, so build_search_grid.py can't see them
-# and would duplicate them into the new manifest.
+
 
 set -euo pipefail
 
@@ -70,6 +60,7 @@ while (( start < N_TOTAL )); do
   done
 
   echo "$(date -Is) Submitting rows ${start}-${end}."
+  ### key line 
   sbatch --array="${start}-${end}%${CONCURRENCY}" "${ARRAY_SCRIPT}" "${MANIFEST}"
   start=$(( end + 1 ))
 done

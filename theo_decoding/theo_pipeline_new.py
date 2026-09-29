@@ -12,6 +12,10 @@ WHAT IT DOES (see main()):
   2. Bin per-channel MUA into dt-second bins -> X (n_bins, n_channels); bin the
      chosen behaviour PCs onto the same grid -> y. Trim to the neural/behaviour
      overlap window.
+     Two clocks (verified in compare_neural_behaviour.py): neural<->behaviour
+     alignment, binning and all plots use the neural clock zeroed at the
+     recording's first sample (sample_index/fs); only the motion lookup uses
+     rec.get_times()'s clock (+ time_offset), which the DREDge estimate is on.
   3. KFold(shuffle=False) CV. LagMat is applied PER FOLD, after the split (the
      leakage fix -- an earlier version lagged once globally, letting boundary
      rows borrow data from across a fold edge). Window sizes are in SECONDS
@@ -39,6 +43,8 @@ OUTPUTS, under <output-root>/<timestamp>_<tag>/ (one dir per run):
   predictions/<model>_oof_predictions.npz  -- out-of-fold predictions
   figures/           -- drift scatter, firing-rate heatmap, decoded-vs-observed,
                         residuals, XGB loss/importance, train-vs-test R2, ...
+                        plus (unless --no-alignment-plots) alignment_check.png and
+                        neural_behaviour_comparison.png for checking the alignment
 """
 
 import sys
@@ -260,6 +266,10 @@ def _nn_params(name, args, batch_size, n_layers):
         "n_layers": n_layers,
         "lr": 0.001,
         "device": args.device,
+        # skorch's default (ValidSplit(5)) would hold out the first 20% of every
+        # fold's training rows as a validation set; with no early stopping it
+        # was never used, so the nets silently trained on only 80% of the data.
+        "train_split": None,
     }
 
 
@@ -467,6 +477,19 @@ def build_parser():
         help="Number of channels shared between consecutive smoothing windows (must "
         "be < --channel-smooth-window). Only used when --channel-smooth-window > 0.",
     )
+
+    # --- Alignment debugging plots (ported from compare_neural_behaviour.py) ---
+    p.add_argument(
+        "--alignment-plots", action=argparse.BooleanOptionalAction, default=True,
+        help="Save figures/alignment_check.png (full raw neural scatter vs behaviour PCs, "
+        "trim points marked) and figures/neural_behaviour_comparison.png (snapped scatter, "
+        "binned y, binned X, fold boundaries). --no-alignment-plots to skip, e.g. in big searches.",
+    )
+    p.add_argument("--plot-seconds-per-inch", type=float, default=10.0,
+        help="Horizontal zoom of the alignment plots (smaller = wider figure).")
+    p.add_argument("--plot-dpi", type=int, default=100, help="DPI of the alignment plots.")
+    p.add_argument("--plot-max-peaks", type=int, default=2_000_000,
+        help="Random subsample of peaks drawn in the alignment scatters (0 = all).")
 
     # --- Preprocessing (searchable) ---
     p.add_argument(
@@ -711,12 +734,15 @@ def plot_drift_scatter(out_path, peak_times_abs, depths, title, fold_boundary_ti
     plt.close(fig)
 
 
-def plot_motion_overlay(out_path, peak_times_abs, depths, motion_obj, fold_boundary_times):
+def plot_motion_overlay(out_path, peak_times_abs, depths, motion_obj, fold_boundary_times, time_offset=0.0):
+    """peak_times_abs / fold_boundary_times are on the alignment (zeroed) clock;
+    motion_obj.temporal_bins_s is on the rec.get_times() clock, so it's shifted
+    by -time_offset here to draw everything on one axis."""
     fig, ax = plt.subplots(figsize=(20, 7))
     ax.scatter(peak_times_abs, depths, s=1, color="k", alpha=0.02, rasterized=True, label="Peaks (localized depth)")
 
     colors = ["red", "royalblue", "darkgreen", "darkorange", "deeppink", "saddlebrown", "teal"]
-    t_bins_abs = motion_obj.temporal_bins_s[0]
+    t_bins_abs = motion_obj.temporal_bins_s[0] - time_offset
     d_bins = motion_obj.spatial_bins_um
     displ = motion_obj.displacement[0]
     for di, start_d in enumerate(d_bins):
@@ -735,6 +761,167 @@ def plot_motion_overlay(out_path, peak_times_abs, depths, motion_obj, fold_bound
     ax.grid(alpha=0.15)
     fig.tight_layout()
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _capped_fig_width(width_in, plot_dpi, min_in=40.0, max_px=60000):
+    """At least min_in wide, but capped so width*dpi stays under matplotlib/Agg's
+    2**16 px canvas limit (a long session would otherwise crash savefig)."""
+    return min(max(min_in, width_in), max_px / plot_dpi)
+
+
+def _subsample_idx(n, max_n, seed):
+    """Indices of at most max_n of n points (random, sorted), so the wide
+    alignment scatters stay tractable to render. max_n <= 0 -> keep all."""
+    if max_n <= 0 or n <= max_n:
+        return np.arange(n)
+    return np.sort(np.random.default_rng(seed).choice(n, size=max_n, replace=False))
+
+
+def plot_alignment_check(
+    out_path, peak_times_sec, depths, beh_t, beh_outputs, pc_labels,
+    neural_start_raw, neural_end_raw, beh_start_raw, beh_end_raw, t_start, t_end,
+    seconds_per_inch, plot_dpi, max_peaks, seed,
+):
+    """Ported from compare_neural_behaviour.py. Neural scatter + texture PCs,
+    each over its FULL raw time range (not trimmed), on the alignment clock --
+    lets you confirm t_start/t_end by checking that the shaded/excluded edges
+    really are the parts that don't line up between the two recordings."""
+    t_min = min(neural_start_raw, beh_start_raw)
+    t_max = max(neural_end_raw, beh_end_raw)
+    fig_width = _capped_fig_width((t_max - t_min) / seconds_per_inch, plot_dpi)
+
+    fig, axes = plt.subplots(
+        2, 1, figsize=(fig_width, 9), sharex=True,
+        gridspec_kw={"hspace": 0.15, "height_ratios": [1.2, 1]},
+    )
+    ax_scatter, ax_beh = axes
+    TITLE_KW = dict(loc="left", fontsize=13, fontweight="bold")
+
+    idx = _subsample_idx(len(peak_times_sec), max_peaks, seed)
+    ax_scatter.scatter(peak_times_sec[idx], depths[idx], s=1, color="k", alpha=0.02, rasterized=True)
+    ax_scatter.set_ylabel("Depth (um)")
+    ax_scatter.set_title(
+        f"1. Neural scatter (raw, uncorrected depth, full recording; {len(idx):,}/{len(peak_times_sec):,} peaks shown)",
+        **TITLE_KW,
+    )
+    ax_scatter.grid(alpha=0.15)
+
+    beh_colors = ["tab:blue", "tab:orange", "tab:green"]
+    for i, col in enumerate(pc_labels):
+        ax_beh.plot(beh_t, beh_outputs[:, i], color=beh_colors[i % len(beh_colors)], lw=0.6, label=col)
+    ax_beh.set_ylabel("Texture PC value")
+    ax_beh.set_title(f"2. Texture (behavior) {', '.join(pc_labels)} (full session)", **TITLE_KW)
+    ax_beh.legend(loc="upper right", fontsize=8, ncol=3)
+    ax_beh.grid(alpha=0.15)
+
+    markers = [
+        (0.0, "t=0", "black", "-"),
+        (neural_start_raw, "neural start", "tab:cyan", ":"),
+        (neural_end_raw, "neural end", "tab:cyan", "-."),
+        (beh_start_raw, "beh start", "tab:purple", ":"),
+        (beh_end_raw, "beh end", "tab:purple", "-."),
+        (t_start, "t_start (trim)", "tab:red", "--"),
+        (t_end, "t_end (trim)", "tab:red", "--"),
+    ]
+    for ax in axes:
+        ax.axvspan(t_min, t_start, color="gray", alpha=0.15, zorder=0)
+        ax.axvspan(t_end, t_max, color="gray", alpha=0.15, zorder=0)
+        for time_val, _, color, ls in markers:
+            ax.axvline(time_val, color=color, lw=1.5, ls=ls, zorder=3)
+
+    # Labels above the top panel at each marker's x (a legend is useless on a
+    # 40+ inch figure); greedily stacked on height levels so close markers fan out.
+    height_levels = [1.10, 1.22, 1.34, 1.46]
+    min_gap = (t_max - t_min) * 0.035
+    level_last_x = [-np.inf] * len(height_levels)
+    for time_val, label, color, _ in sorted(markers, key=lambda m: m[0]):
+        level = next((lvl for lvl, last_x in enumerate(level_last_x) if time_val - last_x > min_gap), None)
+        if level is None:
+            level = int(np.argmin(level_last_x))
+        level_last_x[level] = time_val
+        ax_scatter.annotate(
+            f"{label}\n{time_val:.2f}s",
+            xy=(time_val, 1.0), xycoords=("data", "axes fraction"),
+            xytext=(time_val, height_levels[level]), textcoords=("data", "axes fraction"),
+            ha="center", va="bottom", fontsize=7.5, color=color,
+            arrowprops=dict(arrowstyle="-", color=color, lw=0.8, shrinkA=0, shrinkB=0),
+        )
+
+    # x-axis starts at t=0 (so the clock's zero is always visible); tick labels
+    # are relative to t_start, every 10s, with t_start on a "0" tick.
+    tick_step = 10.0
+    xlim_left = min(0.0, t_min)
+    k_min = np.floor((xlim_left - t_start) / tick_step)
+    k_max = np.ceil((t_max - t_start) / tick_step)
+    ticks_abs = t_start + tick_step * np.arange(k_min, k_max + 1)
+    tick_labels = [f"{k * tick_step:.0f}" for k in np.arange(k_min, k_max + 1)]
+    for ax in axes:
+        ax.set_xticks(ticks_abs)
+        ax.set_xticklabels(tick_labels, fontsize=6, rotation=90)
+    ax_beh.set_xlabel("Time relative to t_start (s)")
+
+    axes[0].set_xlim(xlim_left, t_max)
+    fig.suptitle(
+        f"Neural/behavior alignment check -- full raw traces, shaded = trimmed off, "
+        f"dashed red = t_start/t_end (kept: {t_start:.1f}s to {t_end:.1f}s)",
+        y=1.12,
+    )
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=plot_dpi, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_neural_behaviour_comparison(
+    out_path, peak_times_trim, snapped_depths_trim, t_centers, X, y, pc_labels,
+    fold_boundary_times, t_start, t_end, seconds_per_inch, plot_dpi, max_peaks, seed, title,
+):
+    """Ported from compare_neural_behaviour.py (panels 1-3 of its comparison
+    figure; its neural-PCA panel is dropped). What the decoder actually sees,
+    on one shared time axis: drift-corrected/snapped scatter, the dt-binned
+    behaviour PCs (y), and the dt-binned firing-rate heatmap (X), with CV fold
+    boundaries on every panel."""
+    fig_width = _capped_fig_width((t_end - t_start) / seconds_per_inch, plot_dpi)
+    fig, axes = plt.subplots(
+        3, 1, figsize=(fig_width, 12), sharex=True,
+        gridspec_kw={"hspace": 0.12, "height_ratios": [1.2, 1, 1.4]},
+    )
+    ax_scatter, ax_beh_pcs, ax_heatmap = axes
+    TITLE_KW = dict(loc="left", fontsize=13, fontweight="bold")
+
+    idx = _subsample_idx(len(peak_times_trim), max_peaks, seed)
+    ax_scatter.scatter(peak_times_trim[idx], snapped_depths_trim[idx], s=1, color="k", alpha=0.02, rasterized=True)
+    ax_scatter.set_ylabel("Depth (um)")
+    ax_scatter.set_title("1. Neural scatter (drift-corrected, snapped to channel)", **TITLE_KW)
+    ax_scatter.grid(alpha=0.15)
+
+    beh_colors = ["tab:blue", "tab:orange", "tab:green"]
+    for i, col in enumerate(pc_labels):
+        ax_beh_pcs.plot(t_centers, y[:, i], color=beh_colors[i % len(beh_colors)], lw=0.6, label=col)
+    ax_beh_pcs.set_ylabel("Texture PC value")
+    ax_beh_pcs.set_title(f"2. Texture (behavior) {', '.join(pc_labels)}, dt-binned (= y)", **TITLE_KW)
+    ax_beh_pcs.legend(loc="upper right", fontsize=8, ncol=3)
+    ax_beh_pcs.grid(alpha=0.15)
+
+    heatmap_vmax = max(float(np.percentile(X, 99)), 1.0)
+    ax_heatmap.imshow(
+        X.T, aspect="auto", origin="lower", cmap="Greys", vmin=0, vmax=heatmap_vmax,
+        extent=[t_centers[0], t_centers[-1], 0, X.shape[1]],
+    )
+    ax_heatmap.set_ylabel("Channel / feature")
+    ax_heatmap.set_xlabel("Time (s)")
+    ax_heatmap.set_title(
+        f"3. Neural data after binning (= X; white=0 -> black={heatmap_vmax:.0f}, 99th pct)", **TITLE_KW,
+    )
+
+    for ax in axes:
+        for bt in fold_boundary_times:
+            ax.axvline(bt, color="tab:red", lw=0.8, ls=":", alpha=0.7)
+
+    axes[0].set_xlim(t_start, t_end)
+    fig.suptitle(f"{title} -- neural vs. behavior, time-aligned (dotted red = CV fold boundaries)", y=1.0)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=plot_dpi, bbox_inches="tight")
     plt.close(fig)
 
 
@@ -768,6 +955,7 @@ def make_nn_step(module, y_dim, params):
         module__frac_dropout=params["frac_dropout"],
         max_epochs=params["max_epochs"],
         device=params["device"],
+        train_split=params["train_split"],  # None = train on the whole training fold
         verbose=0,
     )
     if params["n_layers"] is not None:
@@ -1140,7 +1328,16 @@ def main():
     time_offset = float(rec.get_times()[0])
 
     peak_channel_index = peaks["channel_index"].astype(int)
-    peak_times_sec = peaks["sample_index"].astype(float) / fs + time_offset
+    # Two clocks, deliberately kept separate (verified in compare_neural_behaviour.py):
+    #   peak_times_sec    -- neural clock zeroed at the recording's first sample
+    #                        (no time_offset). beh["time"] is a Timedelta from session
+    #                        start, so THIS is the clock that lines up with behaviour:
+    #                        used for the overlap trim, binning, and every plot.
+    #   peak_times_motion -- rec.get_times()'s clock (WITH time_offset), the clock the
+    #                        saved DREDge motion estimate was computed in. Used ONLY
+    #                        for the motion lookup in get_corrected_positions().
+    peak_times_sec = peaks["sample_index"].astype(float) / fs
+    peak_times_motion = peak_times_sec + time_offset
 
     n_channels = channel_ids.shape[0]
     if peak_channel_index.min() >= 0 and peak_channel_index.max() < n_channels:
@@ -1181,6 +1378,23 @@ def main():
             localized_y = localized_peaks["y"].astype(float)
             print(f"Loaded localized peaks: {localized_peaks_path}")
             drift_corrected = True
+            # Sanity check that the motion estimate really is on the time_offset
+            # clock (peak_times_motion). temporal_bins_s are bin CENTERS, so the first
+            # one sits a little after time_offset, never near 0 unless the motion was
+            # estimated on the zeroed clock -- in which case every lookup would be
+            # shifted by time_offset.
+            motion_t = motion.temporal_bins_s[0]
+            in_range = np.mean((peak_times_motion >= motion_t[0]) & (peak_times_motion <= motion_t[-1]))
+            print(
+                f"Motion clock check: temporal_bins_s spans {motion_t[0]:.2f}-{motion_t[-1]:.2f}s, "
+                f"time_offset={time_offset:.3f}s, {100 * in_range:.1f}% of peaks inside that span."
+            )
+            if time_offset > 1.0 and motion_t[0] < 0.5 * time_offset:
+                print(
+                    "WARNING: motion temporal bins start near 0, not near time_offset -- this "
+                    "motion estimate may be on the zeroed clock, in which case the drift "
+                    "correction lookup below is shifted by time_offset."
+                )
         elif not motion_path.exists():
             print(f"WARNING: motion path {motion_path} not found -- skipping drift correction.")
         else:
@@ -1237,8 +1451,10 @@ def main():
     beh_t = to_seconds(beh["time"])
     beh_outputs = beh[pc_cols].to_numpy(dtype=float)
 
-    neural_start_raw = float(np.min(peak_times_sec))
-    neural_end_raw = float(np.max(peak_times_sec))
+    # Neural extent = the recording's own extent on the zeroed clock (not
+    # first/last peak), matching compare_neural_behaviour.py.
+    neural_start_raw = 0.0
+    neural_end_raw = float(rec.get_times()[-1] - time_offset)
     beh_start_raw = float(np.min(beh_t))
     beh_end_raw = float(np.max(beh_t))
 
@@ -1247,8 +1463,18 @@ def main():
     if t_end <= t_start:
         raise ValueError("No overlap between neural and behavior")
 
+    if args.alignment_plots:
+        full_depths = localized_y if drift_corrected else channel_positions[peak_row_index, 1]
+        plot_alignment_check(
+            figs_dir / "alignment_check.png",
+            peak_times_sec, full_depths, beh_t, beh_outputs, pc_cols[:3],
+            neural_start_raw, neural_end_raw, beh_start_raw, beh_end_raw, t_start, t_end,
+            args.plot_seconds_per_inch, args.plot_dpi, args.plot_max_peaks, args.seed,
+        )
+
     peak_keep = (peak_times_sec >= t_start) & (peak_times_sec < t_end)
-    peak_times_trim = peak_times_sec[peak_keep]
+    peak_times_trim = peak_times_sec[peak_keep]              # alignment clock: binning + plots
+    peak_times_motion_trim = peak_times_motion[peak_keep]    # motion clock: drift lookup only
     peak_rows_trim_raw = peak_row_index[peak_keep]
     raw_depths_trim = channel_positions[peak_rows_trim_raw, 1]
 
@@ -1257,7 +1483,7 @@ def main():
         raw_positions_trim = np.column_stack(
             [channel_positions[peak_rows_trim_raw, 0], localized_y_trim]
         )
-        corrected_positions_trim = get_corrected_positions(peak_times_trim, raw_positions_trim, motion)
+        corrected_positions_trim = get_corrected_positions(peak_times_motion_trim, raw_positions_trim, motion)
         corrected_depths_trim = corrected_positions_trim[:, 1]
         peak_rows_trim = snap_to_nearest_channel(corrected_positions_trim, channel_positions)
         n_reassigned = int(np.sum(peak_rows_trim != peak_rows_trim_raw))
@@ -1526,6 +1752,15 @@ def main():
 
     plot_firing_rate_heatmap(figs_dir / "firing_rate_heatmap.png", X, t_centers, fold_boundary_times)
 
+    if args.alignment_plots:
+        plot_neural_behaviour_comparison(
+            figs_dir / "neural_behaviour_comparison.png",
+            peak_times_trim, channel_positions[peak_rows_trim, 1], t_centers, X, y, pc_cols[:3],
+            fold_boundary_times, t_start, t_end,
+            args.plot_seconds_per_inch, args.plot_dpi, args.plot_max_peaks, args.seed,
+            title=f"{args.animal}/{args.neural_prefix} ({dataset_id})",
+        )
+
     plot_density_before_after(
         figs_dir / "channel_density_before_after_smoothing.png",
         active_channel_idx, channel_positions, channel_spike_counts[active_channel_idx], (t_end - t_start),
@@ -1543,7 +1778,7 @@ def main():
     if drift_corrected:
         plot_motion_overlay(
             figs_dir / "drift_02_motion_overlay.png",
-            peak_times_trim, raw_depths_trim, motion, fold_boundary_times,
+            peak_times_trim, raw_depths_trim, motion, fold_boundary_times, time_offset=time_offset,
         )
         plot_drift_scatter(
             figs_dir / "drift_03_corrected_scatter.png",
@@ -1606,6 +1841,9 @@ def main():
             "motion_path": str(motion_path) if motion_path else None,
             "localized_peaks_path": str(localized_peaks_path) if localized_peaks_path else None,
             "time_offset": time_offset,
+            # raw_ranges / t_centers / fold times are all on this clock; the motion
+            # lookup alone uses <this clock> + time_offset.
+            "alignment_clock": "neural_zeroed (sample_index / fs, no time_offset)",
             "raw_ranges": {
                 "neural": [neural_start_raw, neural_end_raw],
                 "behavior": [beh_start_raw, beh_end_raw],

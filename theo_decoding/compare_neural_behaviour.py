@@ -1,38 +1,19 @@
 # %%
 
-"""SUPPLEMENTARY analysis tool -- not run as part of a search.
+"""SUPPLEMENTARY -- an attempt to check the neural<->behaviour and motion<->neural
+time alignment (GLC7189/c_g0), with diagnostic plots.
 
-Roughly the same load + preprocess pipeline as theo_pipeline_new.py /
-theo_data_prep_demo.py (GLC7189/c_g0, full diagnostic QC plots restored), plus
-two extra analysis steps:
+The alignment it uses was found to be correct, and this logic is now used in
+theo_pipeline_new.py (as are its alignment_check and comparison plots):
+  - neural<->behaviour: neural clock zeroed at the recording's first sample
+    (sample_index/fs, no time_offset), matching beh["time"] (a Timedelta from
+    session start); used for the overlap trim, binning and plots.
+  - motion<->neural: the motion lookup uses rec.get_times()'s clock
+    (+ time_offset), which the saved DREDge estimate is on.
 
-  1. PCA on the binned per-channel firing rates (X) -> top 50 neural PCs,
-     saved to disk.
-  2. A single time-aligned comparison figure with 4 stacked panels: the
-     drift-corrected neural scatter, the first 3 texture (behavior) PCs, the
-     binned firing-rate heatmap, and the first 3 neural PCs from step 1 --
-     all sharing one time axis, with the CV fold boundaries marked on every
-     panel.
-
-ONE DELIBERATE DIFFERENCE FROM theo_pipeline_new.py -- the neural<->behaviour
-time alignment:
-  - theo_pipeline_new.py puts EVERYTHING on one clock: the absolute
-    rec.get_times() clock. peak_times_sec = sample_index/fs + time_offset,
-    and t_start/t_end (the neural/behaviour overlap trim) are computed on that
-    same clock, as is the DREDge motion lookup.
-  - This script splits into two: alignment/binning against behaviour uses a
-    NEURAL-ZEROED clock (peak sample_index/fs, no time_offset), while the
-    motion lookup keeps the absolute clock (peak_times_motion). So relative to
-    theo_pipeline_new.py, the neural stream here is shifted earlier by
-    time_offset (~4.3s for this recording) before being trimmed/binned
-    against behaviour.
-  The drift-correction step itself (get_corrected_positions +
-  snap_to_nearest_channel, fed the absolute-clock times) is identical in both.
-  Which alignment is right depends on the behaviour df's `time` clock
-  convention -- unresolved; the two scripts genuinely disagree here, so don't
-  treat this one's numbers as a faithful reproduction of the main pipeline's.
-
-See theo_pipeline_new.py for the general, CLI-configurable version.
+Note: only sections 1-5 (load, trim, drift correction, alignment_check.png) run.
+Sections 6-12 (binning, lag matrix, QC plots, neural PCA, comparison figure) are
+disabled -- wrapped in a ''' string block at the end of the file.
 """
 
 import json
